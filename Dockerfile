@@ -2,7 +2,13 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache build-base
+ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
+ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
+
+RUN apk add --no-cache \
+  --repository="${ALPINE_MAIN_REPO}" \
+  --repository="${ALPINE_COMMUNITY_REPO}" \
+  build-base
 
 COPY go.mod go.sum ./
 
@@ -18,7 +24,13 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w -X 'main.Version=${VERSION
 
 FROM alpine:3.23
 
-RUN apk add --no-cache tzdata
+ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
+ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
+
+RUN apk add --no-cache \
+  --repository="${ALPINE_MAIN_REPO}" \
+  --repository="${ALPINE_COMMUNITY_REPO}" \
+  tzdata
 
 RUN mkdir /CLIProxyAPI
 
