@@ -4,6 +4,7 @@ WORKDIR /app
 
 ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
 ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
+ARG GOPROXY=https://goproxy.cn,direct
 
 RUN apk add --no-cache \
   --repository="${ALPINE_MAIN_REPO}" \
@@ -12,7 +13,7 @@ RUN apk add --no-cache \
 
 COPY go.mod go.sum ./
 
-RUN go mod download
+RUN GOPROXY="${GOPROXY}" go mod download
 
 COPY . .
 
