@@ -47,6 +47,41 @@ func TestCodexExecutorExecute_EmptyStreamCompletionOutputUsesOutputItemDone(t *t
 	}
 }
 
+func TestCodexExecutorExecuteOpenAIResponsesNonStreamKeepsOversizedImageOutputItemDone(t *testing.T) {
+	oversizedResult := strings.Repeat("A", codexOutputItemDoneMaxItemBytes+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","result":"` + oversizedResult + `","output_format":"png"},"output_index":0}` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"gpt-5.4-mini-2026-03-17","output":[],"usage":{"input_tokens":8,"output_tokens":28,"total_tokens":36}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4-mini",
+		Payload: []byte(`{"model":"gpt-5.4-mini","input":"Draw it"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(resp.Payload, "output.0.type").String(); got != "image_generation_call" {
+		t.Fatalf("output[0].type = %q, want image_generation_call; payload=%s", got, string(resp.Payload))
+	}
+	gotResult := gjson.GetBytes(resp.Payload, "output.0.result").String()
+	if gotResult != oversizedResult {
+		t.Fatalf("output[0].result length = %d, want %d", len(gotResult), len(oversizedResult))
+	}
+}
+
 func TestCodexExecutorExecuteSurfacesTerminalStreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -223,5 +258,46 @@ func TestCodexExecutorExecuteStream_EmptyStreamCompletionOutputUsesOutputItemDon
 	gotContent := gjson.GetBytes(completed, "response.output.0.content.0.text").String()
 	if gotContent != "ok" {
 		t.Fatalf("response.output[0].content[0].text = %q, want %q; completed=%s", gotContent, "ok", string(completed))
+	}
+}
+
+func TestCollectCodexOutputItemDoneWithLimitsSkipsOversizedImageResult(t *testing.T) {
+	oversizedResult := strings.Repeat("A", codexOutputItemDoneMaxItemBytes+1)
+	event := []byte(`{"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","result":"` + oversizedResult + `","output_format":"png"},"output_index":0}`)
+	itemsByIndex := make(map[int64][]byte)
+	var fallback [][]byte
+
+	if stored := collectCodexOutputItemDoneWithLimits(event, itemsByIndex, &fallback, codexResponsesOutputItemDoneLimits); stored {
+		t.Fatal("expected oversized image_generation_call item to be skipped")
+	}
+	if len(itemsByIndex) != 0 || len(fallback) != 0 {
+		t.Fatalf("oversized item was retained: byIndex=%d fallback=%d", len(itemsByIndex), len(fallback))
+	}
+}
+
+func TestCollectCodexOutputItemDoneWithLimitsKeepsSmallItems(t *testing.T) {
+	event := []byte(`{"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},"output_index":0}`)
+	itemsByIndex := make(map[int64][]byte)
+	var fallback [][]byte
+
+	if stored := collectCodexOutputItemDoneWithLimits(event, itemsByIndex, &fallback, codexResponsesOutputItemDoneLimits); !stored {
+		t.Fatal("expected small message item to be retained")
+	}
+	if got := gjson.GetBytes(itemsByIndex[0], "content.0.text").String(); got != "ok" {
+		t.Fatalf("stored item text = %q, want ok; item=%s", got, string(itemsByIndex[0]))
+	}
+}
+
+func TestCollectCodexOutputItemDoneWithLimitsKeepsOversizedNonImageItems(t *testing.T) {
+	largeArguments := strings.Repeat("x", codexOutputItemDoneMaxItemBytes+1)
+	event := []byte(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"` + largeArguments + `","status":"completed"},"output_index":0}`)
+	itemsByIndex := make(map[int64][]byte)
+	var fallback [][]byte
+
+	if stored := collectCodexOutputItemDoneWithLimits(event, itemsByIndex, &fallback, codexResponsesOutputItemDoneLimits); !stored {
+		t.Fatal("expected oversized non-image item to be retained")
+	}
+	if got := gjson.GetBytes(itemsByIndex[0], "type").String(); got != "function_call" {
+		t.Fatalf("stored item type = %q, want function_call; item=%s", got, string(itemsByIndex[0]))
 	}
 }

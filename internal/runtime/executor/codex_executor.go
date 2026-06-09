@@ -43,20 +43,84 @@ const (
 var dataTag = []byte("data:")
 var codexClaudeCodeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
+const (
+	codexOutputItemDoneMaxItemBytes  = 2 * 1024 * 1024
+	codexOutputItemDoneMaxTotalBytes = 4 * 1024 * 1024
+)
+
+type codexOutputItemDoneLimits struct {
+	MaxItemBytes  int
+	MaxTotalBytes int
+}
+
+var codexResponsesOutputItemDoneLimits = codexOutputItemDoneLimits{
+	MaxItemBytes:  codexOutputItemDoneMaxItemBytes,
+	MaxTotalBytes: codexOutputItemDoneMaxTotalBytes,
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
 func collectCodexOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) {
+	collectCodexOutputItemDoneWithLimits(eventData, outputItemsByIndex, outputItemsFallback, codexOutputItemDoneLimits{})
+}
+
+func collectCodexOutputItemDoneWithLimits(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte, limits codexOutputItemDoneLimits) bool {
 	itemResult := gjson.GetBytes(eventData, "item")
 	if !itemResult.Exists() || itemResult.Type != gjson.JSON {
-		return
+		return false
 	}
+	itemRaw := itemResult.Raw
 	outputIndexResult := gjson.GetBytes(eventData, "output_index")
+	currentBytes := codexBufferedOutputImageResultBytes(outputItemsByIndex, *outputItemsFallback)
 	if outputIndexResult.Exists() {
-		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-		return
+		currentBytes -= codexOutputImageResultBytes(gjson.ParseBytes(outputItemsByIndex[outputIndexResult.Int()]))
 	}
-	*outputItemsFallback = append(*outputItemsFallback, []byte(itemResult.Raw))
+	if !codexOutputItemDoneWithinLimits(itemResult, currentBytes, limits) {
+		return false
+	}
+	if outputIndexResult.Exists() {
+		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemRaw)
+		return true
+	}
+	*outputItemsFallback = append(*outputItemsFallback, []byte(itemRaw))
+	return true
+}
+
+func codexBufferedOutputImageResultBytes(outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) int {
+	total := 0
+	for _, item := range outputItemsByIndex {
+		total += codexOutputImageResultBytes(gjson.ParseBytes(item))
+	}
+	for _, item := range outputItemsFallback {
+		total += codexOutputImageResultBytes(gjson.ParseBytes(item))
+	}
+	return total
+}
+
+func codexOutputItemDoneWithinLimits(itemResult gjson.Result, currentBytes int, limits codexOutputItemDoneLimits) bool {
+	itemBytes := codexOutputImageResultBytes(itemResult)
+	if itemBytes == 0 {
+		return true
+	}
+	if limits.MaxItemBytes > 0 && itemBytes > limits.MaxItemBytes {
+		return false
+	}
+	if limits.MaxTotalBytes > 0 && currentBytes+itemBytes > limits.MaxTotalBytes {
+		return false
+	}
+	return true
+}
+
+func codexOutputImageResultBytes(itemResult gjson.Result) int {
+	if itemResult.Get("type").String() != "image_generation_call" {
+		return 0
+	}
+	result := itemResult.Get("result")
+	if !result.Exists() || result.Type == gjson.Null {
+		return 0
+	}
+	return len(result.Raw)
 }
 
 func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
@@ -237,6 +301,13 @@ func translateCodexRequestPair(from, to sdktranslator.Format, model string, orig
 	originalTranslated := sdktranslator.TranslateRequest(from, to, model, originalPayload, stream)
 	body := sdktranslator.TranslateRequest(from, to, model, payload, stream)
 	return originalTranslated, body
+}
+
+func codexResponseTranslationPayloads(from sdktranslator.Format, originalPayload, requestPayload []byte) ([]byte, []byte) {
+	if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		return nil, nil
+	}
+	return originalPayload, requestPayload
 }
 
 type codexReasoningReplayScope struct {
@@ -893,16 +964,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if eventType == "response.output_item.done" {
-			itemResult := gjson.GetBytes(eventData, "item")
-			if !itemResult.Exists() || itemResult.Type != gjson.JSON {
-				continue
-			}
-			outputIndexResult := gjson.GetBytes(eventData, "output_index")
-			if outputIndexResult.Exists() {
-				outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-			} else {
-				outputItemsFallback = append(outputItemsFallback, []byte(itemResult.Raw))
-			}
+			collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 			continue
 		}
 
@@ -941,7 +1003,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		var param any
 		clientCompletedData := applyCodexIdentityExposeResponsePayload(completedData, identityState)
-		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, clientCompletedData, &param)
+		translationOriginalPayload, translationRequestPayload := codexResponseTranslationPayloads(from, originalPayload, body)
+		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, translationOriginalPayload, translationRequestPayload, clientCompletedData, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		return resp, nil
 	}
@@ -1043,7 +1106,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.EnsurePublished(ctx)
 	var param any
 	clientData := applyCodexIdentityExposeResponsePayload(upstreamData, identityState)
-	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, clientData, &param)
+	translationOriginalPayload, translationRequestPayload := codexResponseTranslationPayloads(from, originalPayload, body)
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, translationOriginalPayload, translationRequestPayload, clientData, &param)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -1094,6 +1158,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
+	imageToolModel := codexImageGenerationToolModel(body)
+	translationOriginalPayload, translationRequestPayload := codexResponseTranslationPayloads(from, originalPayload, body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
@@ -1177,12 +1243,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				switch gjson.GetBytes(data, "type").String() {
 				case "response.output_item.done":
-					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+					collectCodexOutputItemDoneWithLimits(data, outputItemsByIndex, &outputItemsFallback, codexResponsesOutputItemDoneLimits)
 				case "response.completed":
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.Publish(ctx, detail)
 					}
-					publishCodexImageToolUsage(ctx, reporter, body, data)
+					publishCodexImageToolUsageForModel(ctx, reporter, imageToolModel, data)
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					cacheCodexReasoningReplayFromCompleted(replayScope, data)
 					translatedLine = append([]byte("data: "), data...)
@@ -1190,7 +1256,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, translatedLine, &param)
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, translationOriginalPayload, translationRequestPayload, translatedLine, &param)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -1737,12 +1803,16 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 }
 
 func publishCodexImageToolUsage(ctx context.Context, reporter *helps.UsageReporter, body []byte, completedData []byte) {
+	publishCodexImageToolUsageForModel(ctx, reporter, codexImageGenerationToolModel(body), completedData)
+}
+
+func publishCodexImageToolUsageForModel(ctx context.Context, reporter *helps.UsageReporter, imageToolModel string, completedData []byte) {
 	detail, ok := helps.ParseCodexImageToolUsage(completedData)
 	if !ok {
 		return
 	}
 	reporter.EnsurePublished(ctx)
-	reporter.PublishAdditionalModel(ctx, codexImageGenerationToolModel(body), detail)
+	reporter.PublishAdditionalModel(ctx, imageToolModel, detail)
 }
 
 func codexImageGenerationToolModel(body []byte) string {

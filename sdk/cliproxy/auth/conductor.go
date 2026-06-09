@@ -1897,32 +1897,39 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
+		attemptCtx, cancelAttempt := streamAttemptContext(execCtx, opts)
 		var errPrepare error
-		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+		auth, errPrepare = m.prepareRequestAuth(attemptCtx, executor, auth)
 		if errPrepare != nil {
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Message: errPrepare.Error()}}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errPrepare); ok && se != nil {
 				result.Error.HTTPStatus = se.StatusCode()
 			}
-			m.MarkResult(execCtx, result)
+			m.MarkResult(attemptCtx, result)
 			lastErr = errPrepare
+			cleanupFailedHeavyRequestAttempt(cancelAttempt, opts)
 			continue
 		}
-		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled)
+		execReq := sanitizeDownstreamWebsocketFallbackRequest(attemptCtx, auth, req)
+		streamResult, errStream := m.executeStreamWithModelPool(attemptCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled)
 		if errStream != nil {
-			if errCtx := execCtx.Err(); errCtx != nil {
+			if errCtx := attemptCtx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
 			if isRequestInvalidError(errStream) {
+				if cancelAttempt != nil {
+					cancelAttempt()
+				}
 				return nil, errStream
 			}
 			lastErr = errStream
+			cleanupFailedHeavyRequestAttempt(cancelAttempt, opts)
 			if homeMode {
 				homeAuthCount++
 			}
 			continue
 		}
+		streamResult = streamResultWithCancel(attemptCtx, streamResult, cancelAttempt)
 		return streamResult, nil
 	}
 }

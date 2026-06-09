@@ -57,3 +57,31 @@ func TestTranslateCodexRequestPairTranslatesDifferentPayloads(t *testing.T) {
 		t.Fatalf("body = %s, want %s", body, payload)
 	}
 }
+
+func TestCodexResponseTranslationPayloadsOmitOpenAIResponsesRequestBodies(t *testing.T) {
+	originalPayload := []byte(`{"model":"test-model","input":"large"}`)
+	requestPayload := []byte(`{"model":"test-model","input":"translated"}`)
+
+	original, request := codexResponseTranslationPayloads(sdktranslator.FormatOpenAIResponse, originalPayload, requestPayload)
+
+	if original != nil {
+		t.Fatalf("original payload = %q, want nil", string(original))
+	}
+	if request != nil {
+		t.Fatalf("request payload = %q, want nil", string(request))
+	}
+}
+
+func TestCodexResponseTranslationPayloadsKeepOpenAIChatCompletionsOriginalRequest(t *testing.T) {
+	originalPayload := []byte(`{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`)
+	requestPayload := []byte(`{"model":"test-model","input":"translated"}`)
+
+	original, request := codexResponseTranslationPayloads(sdktranslator.FromString("openai"), originalPayload, requestPayload)
+
+	if !bytes.Equal(original, originalPayload) {
+		t.Fatalf("original payload = %q, want %q", string(original), string(originalPayload))
+	}
+	if !bytes.Equal(request, requestPayload) {
+		t.Fatalf("request payload = %q, want %q", string(request), string(requestPayload))
+	}
+}
