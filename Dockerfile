@@ -1,13 +1,15 @@
-ARG BUILDER_BASE=golang:1.26-bookworm
-ARG RUNTIME_BASE=debian:bookworm
-
-FROM ${BUILDER_BASE} AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
+ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
+ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
 ARG GOPROXY=https://goproxy.cn,direct
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+  --repository="${ALPINE_MAIN_REPO}" \
+  --repository="${ALPINE_COMMUNITY_REPO}" \
+  build-base
 
 COPY go.mod go.sum ./
 
@@ -21,9 +23,15 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-FROM ${RUNTIME_BASE}
+FROM alpine:3.23
 
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*
+ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
+ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
+
+RUN apk add --no-cache \
+  --repository="${ALPINE_MAIN_REPO}" \
+  --repository="${ALPINE_COMMUNITY_REPO}" \
+  tzdata ca-certificates
 
 RUN mkdir /CLIProxyAPI
 
