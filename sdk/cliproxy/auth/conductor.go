@@ -2591,10 +2591,14 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		return 0, false
 	}
 	if isAuthUnavailableResultError(err) {
-		if !m.retryAllowed(attempt, providers) {
+		if status != http.StatusUnauthorized || !m.retryAllowed(attempt, providers) {
 			return 0, false
 		}
-		return 0, true
+		wait, found := m.closestCooldownWait(providers, model, attempt)
+		if !found || wait <= 0 || wait > maxWait {
+			return 0, false
+		}
+		return wait, true
 	}
 	wait, found := m.closestCooldownWait(providers, model, attempt)
 	if found {

@@ -108,7 +108,41 @@ func TestManager_ShouldRetryAfterError_UsesOAuthModelAliasForCooldown(t *testing
 	}
 }
 
-func TestManager_ShouldRetryAfterError_AllowsImmediateRetryOnAuthUnavailable(t *testing.T) {
+func TestManager_ShouldRetryAfterError_AuthUnavailableUsesCooldownWait(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(1, 30*time.Second, 0)
+	model := "test-model"
+	next := time.Now().Add(5 * time.Second)
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "claude",
+		ModelStates: map[string]*ModelState{
+			model: {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: next,
+			},
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	_, _, maxWait := m.retrySettings()
+	wait, shouldRetry := m.shouldRetryAfterError(&Error{
+		Code:       "auth_unavailable",
+		HTTPStatus: http.StatusUnauthorized,
+		Message:    "token invalidated",
+	}, 0, []string{"claude"}, model, maxWait)
+	if !shouldRetry {
+		t.Fatal("expected 401 auth_unavailable to retry after cooldown wait")
+	}
+	if wait <= 0 {
+		t.Fatalf("expected cooldown wait > 0, got %v", wait)
+	}
+}
+
+func TestManager_ShouldRetryAfterError_AuthUnavailableRequiresUnauthorizedStatus(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(1, 30*time.Second, 0)
 	auth := &Auth{ID: "auth-1", Provider: "claude"}
@@ -119,14 +153,11 @@ func TestManager_ShouldRetryAfterError_AllowsImmediateRetryOnAuthUnavailable(t *
 	_, _, maxWait := m.retrySettings()
 	wait, shouldRetry := m.shouldRetryAfterError(&Error{
 		Code:       "auth_unavailable",
-		HTTPStatus: http.StatusUnauthorized,
-		Message:    "token invalidated",
+		HTTPStatus: http.StatusServiceUnavailable,
+		Message:    "upstream overloaded",
 	}, 0, []string{"claude"}, "test-model", maxWait)
-	if !shouldRetry {
-		t.Fatal("expected auth_unavailable to trigger one immediate retry")
-	}
-	if wait != 0 {
-		t.Fatalf("expected immediate retry wait=0, got %v", wait)
+	if shouldRetry {
+		t.Fatalf("expected non-401 auth_unavailable not to trigger retry, got wait=%v", wait)
 	}
 }
 
@@ -341,6 +372,52 @@ func (e *authUnavailableRetryExecutor) ExecuteCalls() []string {
 	return out
 }
 
+type alwaysAuthUnavailableExecutor struct {
+	id string
+
+	mu           sync.Mutex
+	executeCalls []string
+}
+
+func (e *alwaysAuthUnavailableExecutor) Identifier() string {
+	return e.id
+}
+
+func (e *alwaysAuthUnavailableExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.mu.Lock()
+	e.executeCalls = append(e.executeCalls, auth.ID)
+	e.mu.Unlock()
+	return cliproxyexecutor.Response{}, &Error{
+		Code:       "auth_unavailable",
+		HTTPStatus: http.StatusUnauthorized,
+		Message:    "always unauthorized",
+	}
+}
+
+func (e *alwaysAuthUnavailableExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, &Error{HTTPStatus: http.StatusNotImplemented, Message: "not implemented"}
+}
+
+func (e *alwaysAuthUnavailableExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (e *alwaysAuthUnavailableExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusNotImplemented, Message: "not implemented"}
+}
+
+func (e *alwaysAuthUnavailableExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func (e *alwaysAuthUnavailableExecutor) ExecuteCalls() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.executeCalls))
+	copy(out, e.executeCalls)
+	return out
+}
+
 func newCredentialRetryLimitTestManager(t *testing.T, maxRetryCredentials int) (*Manager, *credentialRetryLimitExecutor) {
 	t.Helper()
 
@@ -424,13 +501,13 @@ func TestManager_MaxRetryCredentials_LimitsCrossCredentialRetries(t *testing.T) 
 	}
 }
 
-func TestManager_Execute_RetriesAfterAuthUnavailable(t *testing.T) {
+func TestManager_Execute_TriesNextCredentialAfterAuthUnavailable(t *testing.T) {
 	prev := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
 
 	m := NewManager(nil, nil, nil)
-	m.SetRetryConfig(1, 100*time.Millisecond, 0)
+	m.SetRetryConfig(0, 100*time.Millisecond, 0)
 
 	executor := &authUnavailableRetryExecutor{id: "claude"}
 	m.RegisterExecutor(executor)
@@ -443,7 +520,7 @@ func TestManager_Execute_RetriesAfterAuthUnavailable(t *testing.T) {
 			Metadata: map[string]any{"disable_cooling": true},
 		},
 		{
-			ID:       "bb-recovers-on-retry",
+			ID:       "bb-good-auth",
 			Provider: "claude",
 			Metadata: map[string]any{"disable_cooling": true},
 		},
@@ -462,15 +539,72 @@ func TestManager_Execute_RetriesAfterAuthUnavailable(t *testing.T) {
 
 	resp, errExecute := m.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
 	if errExecute != nil {
-		t.Fatalf("execute error = %v, want success after auth_unavailable retry", errExecute)
+		t.Fatalf("execute error = %v, want success after trying next credential", errExecute)
 	}
-	if string(resp.Payload) != "bb-recovers-on-retry" {
-		t.Fatalf("payload = %q, want %q", string(resp.Payload), "bb-recovers-on-retry")
+	if string(resp.Payload) != "bb-good-auth" {
+		t.Fatalf("payload = %q, want %q", string(resp.Payload), "bb-good-auth")
 	}
 
 	calls := executor.ExecuteCalls()
-	if len(calls) < 3 || len(calls) > 4 {
-		t.Fatalf("execute calls = %v, want 3 or 4 calls across retry rounds", calls)
+	want := []string{"aa-always-401", "bb-good-auth"}
+	if len(calls) != len(want) {
+		t.Fatalf("execute calls = %v, want %v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("execute call %d auth = %q, want %q; calls=%v", i, calls[i], want[i], calls)
+		}
+	}
+}
+
+func TestManager_Execute_DoesNotOuterRetryAllAuthUnavailable(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(2, 30*time.Second, 3)
+
+	executor := &alwaysAuthUnavailableExecutor{id: "claude"}
+	m.RegisterExecutor(executor)
+
+	model := "test-model-all-auth-unavailable"
+	auths := []*Auth{
+		{
+			ID:       "aa-auth-unavailable",
+			Provider: "claude",
+			Metadata: map[string]any{"disable_cooling": true},
+		},
+		{
+			ID:       "bb-auth-unavailable",
+			Provider: "claude",
+			Metadata: map[string]any{"disable_cooling": true},
+		},
+		{
+			ID:       "cc-auth-unavailable",
+			Provider: "claude",
+			Metadata: map[string]any{"disable_cooling": true},
+		},
+	}
+
+	reg := registry.GetGlobalRegistry()
+	for _, auth := range auths {
+		reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func(id string) func() {
+			return func() { reg.UnregisterClient(id) }
+		}(auth.ID))
+		if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	_, errExecute := m.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errExecute == nil {
+		t.Fatal("expected auth_unavailable failure")
+	}
+
+	if calls := executor.ExecuteCalls(); len(calls) != 3 {
+		t.Fatalf("execute calls = %v, want exactly 3 calls without outer auth_unavailable retry", calls)
 	}
 }
 
