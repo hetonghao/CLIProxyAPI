@@ -2,8 +2,8 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
-ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
-ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
+ARG ALPINE_MAIN_REPO=https://dl-cdn.alpinelinux.org/alpine/v3.23/main
+ARG ALPINE_COMMUNITY_REPO=https://dl-cdn.alpinelinux.org/alpine/v3.23/community
 ARG GOPROXY=https://goproxy.cn,direct
 
 RUN apk add --no-cache \
@@ -25,8 +25,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 
 FROM alpine:3.23
 
-ARG ALPINE_MAIN_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main
-ARG ALPINE_COMMUNITY_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/community
+ARG ALPINE_MAIN_REPO=https://dl-cdn.alpinelinux.org/alpine/v3.23/main
+ARG ALPINE_COMMUNITY_REPO=https://dl-cdn.alpinelinux.org/alpine/v3.23/community
 
 RUN apk add --no-cache \
   --repository="${ALPINE_MAIN_REPO}" \
