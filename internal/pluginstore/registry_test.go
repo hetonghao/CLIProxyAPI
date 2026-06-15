@@ -68,6 +68,21 @@ func TestParseRegistryNormalizesPluginFields(t *testing.T) {
 	}
 }
 
+func TestValidateRegistryAllowsMissingVersion(t *testing.T) {
+	t.Parallel()
+
+	registry := Registry{SchemaVersion: 1, Plugins: []Plugin{{
+		ID:          "sample-provider",
+		Name:        "Sample Provider",
+		Description: "Adds sample provider support.",
+		Author:      "author-name",
+		Repository:  "https://github.com/author-name/cliproxy-sample-provider-plugin",
+	}}}
+	if errValidate := ValidateRegistry(registry); errValidate != nil {
+		t.Fatalf("ValidateRegistry() error = %v, want nil for missing version", errValidate)
+	}
+}
+
 func TestValidateRegistryRejectsInvalidEntries(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +157,42 @@ func TestValidateRegistryRejectsInvalidEntries(t *testing.T) {
 				t.Fatalf("ValidateRegistry() error = %v, want substring %q", errValidate, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestNormalizeSourcesAppendsURLsToDefaultSource(t *testing.T) {
+	t.Parallel()
+
+	sources, errNormalize := NormalizeSources([]string{" https://community.example/registry.json "})
+	if errNormalize != nil {
+		t.Fatalf("NormalizeSources() error = %v", errNormalize)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources len = %d, want 2", len(sources))
+	}
+	if sources[0].ID != DefaultSourceID || sources[0].URL != DefaultRegistryURL {
+		t.Fatalf("default source = %#v", sources[0])
+	}
+	if sources[1].ID != SourceID("https://community.example/registry.json") ||
+		sources[1].Name != "community.example" ||
+		sources[1].URL != "https://community.example/registry.json" {
+		t.Fatalf("third-party source = %#v", sources[1])
+	}
+}
+
+func TestNormalizeSourcesSkipsDuplicates(t *testing.T) {
+	t.Parallel()
+
+	sources, errNormalize := NormalizeSources([]string{
+		DefaultRegistryURL,
+		"https://community.example/registry.json",
+		"https://community.example/registry.json",
+	})
+	if errNormalize != nil {
+		t.Fatalf("NormalizeSources() error = %v", errNormalize)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources len = %d, want 2: %#v", len(sources), sources)
 	}
 }
 

@@ -2,6 +2,8 @@ package pluginstore
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -13,10 +15,18 @@ import (
 
 const (
 	DefaultRegistryURL = "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json"
+	DefaultSourceID    = "official"
+	DefaultSourceName  = "Official"
 	SchemaVersion      = 1
 )
 
 var pluginVersionPattern = regexp.MustCompile(`^[0-9][0-9A-Za-z.+-]*$`)
+
+type Source struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
 
 type Registry struct {
 	SchemaVersion int      `json:"schema_version"`
@@ -34,6 +44,54 @@ type Plugin struct {
 	Homepage    string   `json:"homepage,omitempty"`
 	License     string   `json:"license,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
+}
+
+func DefaultSource() Source {
+	return Source{
+		ID:   DefaultSourceID,
+		Name: DefaultSourceName,
+		URL:  DefaultRegistryURL,
+	}
+}
+
+func NormalizeSources(registryURLs []string) ([]Source, error) {
+	out := []Source{DefaultSource()}
+	seenIDs := map[string]string{DefaultSourceID: DefaultRegistryURL}
+	seenURLs := map[string]struct{}{DefaultRegistryURL: {}}
+	for _, registryURL := range registryURLs {
+		registryURL = strings.TrimSpace(registryURL)
+		if registryURL == "" {
+			continue
+		}
+		if _, exists := seenURLs[registryURL]; exists {
+			continue
+		}
+		source := Source{
+			ID:   SourceID(registryURL),
+			Name: SourceName(registryURL),
+			URL:  registryURL,
+		}
+		if existingURL, exists := seenIDs[source.ID]; exists {
+			return nil, fmt.Errorf("plugin store source id collision for %q and %q", existingURL, registryURL)
+		}
+		seenIDs[source.ID] = registryURL
+		seenURLs[registryURL] = struct{}{}
+		out = append(out, source)
+	}
+	return out, nil
+}
+
+func SourceID(registryURL string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(registryURL)))
+	return "source-" + hex.EncodeToString(sum[:])[:12]
+}
+
+func SourceName(registryURL string) string {
+	parsed, errParse := url.Parse(strings.TrimSpace(registryURL))
+	if errParse != nil || strings.TrimSpace(parsed.Host) == "" {
+		return strings.TrimSpace(registryURL)
+	}
+	return parsed.Host
 }
 
 func ParseRegistry(data []byte) (Registry, error) {
@@ -94,7 +152,6 @@ func ValidatePlugin(plugin Plugin) error {
 		"name":        plugin.Name,
 		"description": plugin.Description,
 		"author":      plugin.Author,
-		"version":     plugin.Version,
 		"repository":  plugin.Repository,
 	}
 	for field, value := range required {
@@ -105,7 +162,9 @@ func ValidatePlugin(plugin Plugin) error {
 	if !pluginhost.ValidatePluginID(strings.TrimSpace(plugin.ID)) {
 		return fmt.Errorf("invalid plugin id %q", plugin.ID)
 	}
-	if !validPluginVersion(strings.TrimSpace(plugin.Version)) {
+	// The version is optional since the latest release is the source of truth;
+	// when present it is only used as a display fallback and must be valid.
+	if version := strings.TrimSpace(plugin.Version); version != "" && !validPluginVersion(version) {
 		return fmt.Errorf("invalid plugin version %q", plugin.Version)
 	}
 	if _, _, errRepository := GitHubRepositoryParts(plugin.Repository); errRepository != nil {

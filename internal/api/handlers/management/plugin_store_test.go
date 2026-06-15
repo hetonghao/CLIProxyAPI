@@ -15,10 +15,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
 )
 
 func TestListPluginStoreMergesInstalledStatus(t *testing.T) {
@@ -146,6 +148,160 @@ func TestListPluginStoreEscapesRegistryStrings(t *testing.T) {
 	}
 }
 
+func TestListPluginStoreShowsLatestReleaseVersionAndCaches(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	httpClient := &countingPluginStoreHTTPClient{responses: fakePluginStoreHTTPClient{
+		"https://registry.example/registry.json": registryJSON(t),
+		"https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/latest": []byte(`{
+			"tag_name": "v0.2.0",
+			"assets": []
+		}`),
+	}}
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled: true,
+				Dir:     t.TempDir(),
+			},
+		},
+		configFilePath:         writeTestConfigFile(t),
+		pluginStoreRegistryURL: "https://registry.example/registry.json",
+		pluginStoreHTTPClient:  httpClient,
+	}
+
+	listOnce := func() pluginStoreListResponse {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugin-store", nil)
+		h.ListPluginStore(c)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var body pluginStoreListResponse
+		if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+			t.Fatalf("Unmarshal() error = %v; body=%s", errDecode, rec.Body.String())
+		}
+		return body
+	}
+
+	for call := 0; call < 2; call++ {
+		body := listOnce()
+		if len(body.Plugins) != 1 {
+			t.Fatalf("plugins len = %d, want 1", len(body.Plugins))
+		}
+		if body.Plugins[0].Version != "0.2.0" {
+			t.Fatalf("version = %q, want 0.2.0 from latest release tag", body.Plugins[0].Version)
+		}
+	}
+	releaseCalls := httpClient.count("https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/latest")
+	if releaseCalls != 1 {
+		t.Fatalf("latest release fetched %d times, want 1 (cached)", releaseCalls)
+	}
+}
+
+func TestListPluginStoreFallsBackToRegistryVersion(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled: true,
+				Dir:     t.TempDir(),
+			},
+		},
+		configFilePath:         writeTestConfigFile(t),
+		pluginStoreRegistryURL: "https://registry.example/registry.json",
+		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
+			"https://registry.example/registry.json": registryJSON(t),
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugin-store", nil)
+
+	h.ListPluginStore(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body pluginStoreListResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("Unmarshal() error = %v; body=%s", errDecode, rec.Body.String())
+	}
+	if len(body.Plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(body.Plugins))
+	}
+	if body.Plugins[0].Version != "0.1.0" {
+		t.Fatalf("version = %q, want registry fallback 0.1.0", body.Plugins[0].Version)
+	}
+}
+
+func TestListPluginStoreIncludesThirdPartySources(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled:      true,
+				Dir:          t.TempDir(),
+				StoreSources: []string{"https://community.example/registry.json"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
+			pluginstore.DefaultRegistryURL: registryJSON(t),
+			"https://community.example/registry.json": []byte(`{
+				"schema_version": 1,
+				"plugins": [{
+					"id": "third-provider",
+					"name": "Third Provider",
+					"description": "Adds third-party provider support.",
+					"author": "community",
+					"version": "0.3.0",
+					"repository": "https://github.com/community/cliproxy-third-provider-plugin"
+				}]
+			}`),
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugin-store", nil)
+
+	h.ListPluginStore(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body pluginStoreListResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("Unmarshal() error = %v; body=%s", errDecode, rec.Body.String())
+	}
+	if len(body.Sources) != 2 {
+		t.Fatalf("sources len = %d, want 2: %#v", len(body.Sources), body.Sources)
+	}
+	if len(body.Plugins) != 2 {
+		t.Fatalf("plugins len = %d, want 2: %#v", len(body.Plugins), body.Plugins)
+	}
+	byID := map[string]pluginStoreListEntry{}
+	for _, entry := range body.Plugins {
+		byID[entry.ID] = entry
+	}
+	if byID["sample-provider"].SourceID != pluginstore.DefaultSourceID {
+		t.Fatalf("official source id = %q, want %q", byID["sample-provider"].SourceID, pluginstore.DefaultSourceID)
+	}
+	third := byID["third-provider"]
+	communitySourceID := pluginstore.SourceID("https://community.example/registry.json")
+	if third.StoreID != communitySourceID+"/third-provider" || third.SourceID != communitySourceID || third.SourceName != "community.example" || third.SourceURL != "https://community.example/registry.json" {
+		t.Fatalf("third-party source fields = %#v", third)
+	}
+}
+
 func TestInstallPluginFromStoreWritesFileAndEnablesConfig(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -168,7 +324,7 @@ func TestInstallPluginFromStoreWritesFileAndEnablesConfig(t *testing.T) {
 		pluginStoreRegistryURL: "https://registry.example/registry.json",
 		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
 			"https://registry.example/registry.json": registryJSON(t),
-			"https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/tags/v0.1.0": []byte(`{
+			"https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/latest": []byte(`{
 				"tag_name": "v0.1.0",
 				"assets": [
 					{"name": "` + archiveName + `", "browser_download_url": "https://downloads.example/` + archiveName + `"},
@@ -224,6 +380,100 @@ func TestInstallPluginFromStoreWritesFileAndEnablesConfig(t *testing.T) {
 	}
 }
 
+func TestInstallPluginFromStoreUsesRequestedThirdPartySource(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	pluginsDir := t.TempDir()
+	archiveData := makeManagementPluginStoreZip(t, "sample-provider"+managementPluginExtension(runtime.GOOS), "third-party-library-data")
+	archiveName := "sample-provider_0.3.0_" + runtime.GOOS + "_" + runtime.GOARCH + ".zip"
+	checksum := sha256.Sum256(archiveData)
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled:      false,
+				Dir:          pluginsDir,
+				StoreSources: []string{"https://community.example/registry.json"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
+			pluginstore.DefaultRegistryURL:            registryJSON(t),
+			"https://community.example/registry.json": thirdPartySampleRegistryJSON(t),
+			"https://api.github.com/repos/community/cliproxy-sample-provider-plugin/releases/latest": []byte(`{
+				"tag_name": "v0.3.0",
+				"assets": [
+					{"name": "` + archiveName + `", "browser_download_url": "https://downloads.example/` + archiveName + `"},
+					{"name": "checksums.txt", "browser_download_url": "https://downloads.example/checksums.txt"}
+				]
+			}`),
+			"https://downloads.example/" + archiveName: archiveData,
+			"https://downloads.example/checksums.txt":  []byte(hex.EncodeToString(checksum[:]) + "  " + archiveName + "\n"),
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample-provider"}}
+	communitySourceID := pluginstore.SourceID("https://community.example/registry.json")
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/plugin-store/sample-provider/install?source="+communitySourceID, nil)
+
+	h.InstallPluginFromStore(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body pluginInstallResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("Unmarshal() error = %v; body=%s", errDecode, rec.Body.String())
+	}
+	if body.SourceID != communitySourceID || body.Version != "0.3.0" {
+		t.Fatalf("install response = %#v, want community source version 0.3.0", body)
+	}
+	targetPath := filepath.Join(pluginsDir, runtime.GOOS, runtime.GOARCH, "sample-provider"+managementPluginExtension(runtime.GOOS))
+	data, errRead := os.ReadFile(targetPath)
+	if errRead != nil {
+		t.Fatalf("ReadFile(%s) error = %v", targetPath, errRead)
+	}
+	if string(data) != "third-party-library-data" {
+		t.Fatalf("installed file = %q, want third-party-library-data", data)
+	}
+}
+
+func TestInstallPluginFromStoreRequiresSourceForDuplicateIDs(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled:      false,
+				Dir:          t.TempDir(),
+				StoreSources: []string{"https://community.example/registry.json"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
+			pluginstore.DefaultRegistryURL:            registryJSON(t),
+			"https://community.example/registry.json": thirdPartySampleRegistryJSON(t),
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample-provider"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/plugin-store/sample-provider/install", nil)
+
+	h.InstallPluginFromStore(c)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "plugin_store_source_required") {
+		t.Fatalf("body = %s, want source required error", rec.Body.String())
+	}
+}
+
 func TestInstallPluginFromStoreOverwritesFilePreservesConfigAndReloads(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -250,7 +500,7 @@ func TestInstallPluginFromStoreOverwritesFilePreservesConfigAndReloads(t *testin
 		pluginStoreRegistryURL: "https://registry.example/registry.json",
 		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
 			"https://registry.example/registry.json": registryJSON(t),
-			"https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/tags/v0.1.0": []byte(`{
+			"https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/latest": []byte(`{
 				"tag_name": "v0.1.0",
 				"assets": [
 					{"name": "` + archiveName + `", "browser_download_url": "https://downloads.example/` + archiveName + `"},
@@ -368,6 +618,28 @@ func (c fakePluginStoreHTTPClient) Do(req *http.Request) (*http.Response, error)
 	}, nil
 }
 
+type countingPluginStoreHTTPClient struct {
+	responses fakePluginStoreHTTPClient
+	mu        sync.Mutex
+	counts    map[string]int
+}
+
+func (c *countingPluginStoreHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	if c.counts == nil {
+		c.counts = make(map[string]int)
+	}
+	c.counts[req.URL.String()]++
+	c.mu.Unlock()
+	return c.responses.Do(req)
+}
+
+func (c *countingPluginStoreHTTPClient) count(url string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[url]
+}
+
 func registryJSON(t *testing.T) []byte {
 	t.Helper()
 
@@ -381,6 +653,22 @@ func registryJSON(t *testing.T) []byte {
 			"version": "0.1.0",
 			"repository": "https://github.com/author-name/cliproxy-sample-provider-plugin",
 			"tags": ["provider"]
+		}]
+	}`)
+}
+
+func thirdPartySampleRegistryJSON(t *testing.T) []byte {
+	t.Helper()
+
+	return []byte(`{
+		"schema_version": 1,
+		"plugins": [{
+			"id": "sample-provider",
+			"name": "Sample Provider Community Build",
+			"description": "Adds sample provider support from a third-party source.",
+			"author": "community",
+			"version": "0.3.0",
+			"repository": "https://github.com/community/cliproxy-sample-provider-plugin"
 		}]
 	}`)
 }
