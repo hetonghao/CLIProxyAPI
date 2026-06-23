@@ -27,7 +27,6 @@ const (
 	// reaches capacity so high write volume does not rescan the map every turn.
 	AntigravityReasoningReplayCacheEvictBatchSize = 128
 
-	minAntigravityThoughtSignatureReplayLen = 16
 )
 
 type antigravityReasoningReplayEntry struct {
@@ -244,7 +243,7 @@ func normalizeAntigravityThoughtSignatureReplayItem(itemResult gjson.Result) ([]
 	if sig == "" {
 		sig = strings.TrimSpace(itemResult.Get("thought_signature").String())
 	}
-	if sig == "" || len(sig) < minAntigravityThoughtSignatureReplayLen {
+	if sig == "" {
 		return nil, false
 	}
 	normalized := []byte(`{"type":"thought_signature"}`)

@@ -32,7 +32,7 @@ const (
 	codexImagesGenerationsPath   = "/v1/images/generations"
 	codexImagesEditsPath         = "/v1/images/edits"
 	codexDirectImagesGenerations = "/images/generations"
-	codexDirectImagesEdit        = "/images/edits"
+	codexDirectImagesEdit        = "/images/edit"
 	codexGPTImage15Model         = "gpt-image-1.5"
 	codexOpenAIImagesMainModel   = "gpt-5.4-mini"
 )
@@ -373,6 +373,40 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		err = newCodexStatusErr(httpResp.StatusCode, data)
 		return resp, err
+	}
+
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(httpResp.Header.Get("Content-Type"))), "text/event-stream") || bytes.HasPrefix(bytes.TrimSpace(data), dataTag) {
+		outputItemsByIndex := make(map[int64][]byte)
+		var outputItemsFallback [][]byte
+		for _, line := range bytes.Split(data, []byte("\n")) {
+			if !bytes.HasPrefix(line, dataTag) {
+				continue
+			}
+			eventData := bytes.TrimSpace(line[len(dataTag):])
+			switch gjson.GetBytes(eventData, "type").String() {
+			case "response.output_item.done":
+				collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
+			case "response.completed":
+				if detail, ok := helps.ParseCodexUsage(eventData); ok {
+					reporter.Publish(ctx, detail)
+				}
+				results, createdAt, usageRaw, firstMeta, errExtract := codexExtractImageResults(eventData, outputItemsByIndex, outputItemsFallback)
+				if errExtract != nil {
+					return resp, errExtract
+				}
+				if len(results) == 0 {
+					if refusal := codexExtractImageFailureMessage(eventData, outputItemsByIndex, outputItemsFallback); refusal != "" {
+						return resp, statusErr{code: http.StatusBadRequest, msg: refusal}
+					}
+					return resp, statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"}
+				}
+				out, errOutput := codexBuildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, codexOpenAIImageResponseFormatFromJSON(body))
+				if errOutput != nil {
+					return resp, errOutput
+				}
+				return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
+			}
+		}
 	}
 
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
