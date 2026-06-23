@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -41,7 +40,6 @@ const (
 )
 
 var dataTag = []byte("data:")
-var codexClaudeCodeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
 const (
 	codexOutputItemDoneMaxItemBytes  = 2 * 1024 * 1024
@@ -365,55 +363,12 @@ func sourceFormatEqual(from, want sdktranslator.Format) bool {
 	return strings.EqualFold(strings.TrimSpace(from.String()), want.String())
 }
 
-func codexClaudeCodeReplaySessionKey(payload []byte) string {
-	sessionID := extractClaudeCodeSessionIDForCodexReplay(payload)
+func codexClaudeCodeReplaySessionKey(ctx context.Context, payload []byte, headers http.Header) string {
+	sessionID := helps.ExtractClaudeCodeSessionID(ctx, payload, headers)
 	if sessionID == "" {
 		return ""
 	}
 	return "claude:" + sessionID
-}
-
-func codexClaudeCodePromptCacheStorageKey(req cliproxyexecutor.Request) string {
-	sessionID := extractClaudeCodeSessionIDForCodexReplay(req.Payload)
-	if sessionID == "" {
-		return ""
-	}
-	return helps.CodexPromptCacheKey(req.Model, "claude:"+sessionID)
-}
-
-func codexClaudeCodePromptCache(ctx context.Context, req cliproxyexecutor.Request) (helps.CodexCache, bool, error) {
-	key := codexClaudeCodePromptCacheStorageKey(req)
-	if key == "" {
-		return helps.CodexCache{}, false, nil
-	}
-	if cache, ok, errCache := helps.GetCodexCacheRequired(ctx, key); errCache != nil || ok {
-		return cache, ok, errCache
-	}
-	cache := helps.CodexCache{
-		ID:     uuid.New().String(),
-		Expire: time.Now().Add(1 * time.Hour),
-	}
-	if errSet := helps.SetCodexCacheRequired(ctx, key, cache); errSet != nil {
-		return helps.CodexCache{}, false, errSet
-	}
-	return cache, true, nil
-}
-
-func extractClaudeCodeSessionIDForCodexReplay(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	userID := gjson.GetBytes(payload, "metadata.user_id").String()
-	if userID == "" {
-		return ""
-	}
-	if matches := codexClaudeCodeSessionPattern.FindStringSubmatch(userID); len(matches) >= 2 {
-		return matches[1]
-	}
-	if len(userID) > 0 && userID[0] == '{' {
-		return gjson.Get(userID, "session_id").String()
-	}
-	return ""
 }
 
 func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
@@ -441,7 +396,7 @@ func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Form
 		}
 	}
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		return codexClaudeCodeReplaySessionKey(req.Payload)
+		return codexClaudeCodeReplaySessionKey(ctx, req.Payload, opts.Headers)
 	}
 	if sourceFormatEqual(from, sdktranslator.FormatOpenAI) {
 		if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
@@ -900,6 +855,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = normalizeCodexParallelToolCallsForTools(body)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
 		return resp, errReplay
@@ -1067,6 +1023,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = normalizeCodexParallelToolCallsForTools(body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
@@ -1177,6 +1134,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = normalizeCodexParallelToolCallsForTools(body)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
 		return nil, errReplay
@@ -1527,7 +1485,7 @@ type codexIdentityReplacement struct {
 func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, userPayload []byte, rawJSON []byte) (*http.Request, []byte, codexIdentityConfuseState, error) {
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		cached, ok, errCache := codexClaudeCodePromptCache(ctx, req)
+		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, req.Model, req.Payload, nil)
 		if errCache != nil {
 			return nil, nil, codexIdentityConfuseState{}, errCache
 		}
@@ -1838,6 +1796,21 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 		}
 	}
 	body, _ = sjson.SetRawBytes(body, "tools.-1", imageGenToolJSON)
+	return body
+}
+
+func normalizeCodexParallelToolCallsForTools(body []byte) []byte {
+	if !gjson.GetBytes(body, "parallel_tool_calls").Exists() {
+		return body
+	}
+
+	tools := gjson.GetBytes(body, "tools")
+	hasTools := tools.Exists() && tools.IsArray() && len(tools.Array()) > 0
+	if hasTools {
+		return body
+	}
+
+	body, _ = sjson.DeleteBytes(body, "parallel_tool_calls")
 	return body
 }
 
