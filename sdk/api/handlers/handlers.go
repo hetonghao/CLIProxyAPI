@@ -722,7 +722,6 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
-	reqMeta = coreexecutor.AnnotateRequestMemoryHints(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -788,7 +787,6 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
-	reqMeta = coreexecutor.AnnotateRequestMemoryHints(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -1114,7 +1112,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
-	reqMeta = coreexecutor.AnnotateRequestMemoryHints(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil

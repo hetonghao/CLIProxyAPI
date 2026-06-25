@@ -422,25 +422,9 @@ func insertAntigravityReasoningReplayItems(payload []byte, items [][]byte) ([]by
 				if strings.TrimSpace(gjson.GetBytes(out, path).String()) != "" {
 					continue
 				}
-				updated, err := sjson.SetBytes(out, path, sig)
-				if err != nil {
-					continue
-				}
-				out = updated
-				changed = true
-				continue
 			}
-			partsPath := fmt.Sprintf("request.contents.%d.parts", ci)
-			nextParts := []any{map[string]any{"thoughtSignature": sig}}
-			if parts := gjson.GetBytes(out, partsPath); parts.IsArray() {
-				arr := parts.Array()
-				nextParts = make([]any, 0, len(arr)+1)
-				for _, existingPart := range arr {
-					nextParts = append(nextParts, existingPart.Value())
-				}
-				nextParts = append(nextParts, map[string]any{"thoughtSignature": sig})
-			}
-			updated, err := sjson.SetBytes(out, partsPath, nextParts)
+			path := antigravityReplayPartWritePath(out, ci, pi) + ".thoughtSignature"
+			updated, err := sjson.SetBytes(out, path, sig)
 			if err != nil {
 				continue
 			}

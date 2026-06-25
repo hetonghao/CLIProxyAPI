@@ -32,7 +32,7 @@ const (
 	codexImagesGenerationsPath   = "/v1/images/generations"
 	codexImagesEditsPath         = "/v1/images/edits"
 	codexDirectImagesGenerations = "/images/generations"
-	codexDirectImagesEdit        = "/images/edit"
+	codexDirectImagesEdit        = "/images/edits"
 	codexGPTImage15Model         = "gpt-image-1.5"
 	codexOpenAIImagesMainModel   = "gpt-5.4-mini"
 )
@@ -163,9 +163,6 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 				return resp, errExtract
 			}
 			if len(results) == 0 {
-				if refusal := codexExtractImageFailureMessage(eventData, outputItemsByIndex, outputItemsFallback); refusal != "" {
-					return resp, statusErr{code: http.StatusBadRequest, msg: refusal}
-				}
 				return resp, statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"}
 			}
 			out, errOutput := codexBuildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, prepared.ResponseFormat)
@@ -295,10 +292,6 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 					return
 				}
 				if len(results) == 0 {
-					if refusal := codexExtractImageFailureMessage(eventData, outputItemsByIndex, outputItemsFallback); refusal != "" {
-						sendError(statusErr{code: http.StatusBadRequest, msg: refusal})
-						return
-					}
 					sendError(statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"})
 					return
 				}
@@ -341,7 +334,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	if errCache != nil {
 		return resp, errCache
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
+	applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg)
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
@@ -375,40 +368,6 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 		return resp, err
 	}
 
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(httpResp.Header.Get("Content-Type"))), "text/event-stream") || bytes.HasPrefix(bytes.TrimSpace(data), dataTag) {
-		outputItemsByIndex := make(map[int64][]byte)
-		var outputItemsFallback [][]byte
-		for _, line := range bytes.Split(data, []byte("\n")) {
-			if !bytes.HasPrefix(line, dataTag) {
-				continue
-			}
-			eventData := bytes.TrimSpace(line[len(dataTag):])
-			switch gjson.GetBytes(eventData, "type").String() {
-			case "response.output_item.done":
-				collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-			case "response.completed":
-				if detail, ok := helps.ParseCodexUsage(eventData); ok {
-					reporter.Publish(ctx, detail)
-				}
-				results, createdAt, usageRaw, firstMeta, errExtract := codexExtractImageResults(eventData, outputItemsByIndex, outputItemsFallback)
-				if errExtract != nil {
-					return resp, errExtract
-				}
-				if len(results) == 0 {
-					if refusal := codexExtractImageFailureMessage(eventData, outputItemsByIndex, outputItemsFallback); refusal != "" {
-						return resp, statusErr{code: http.StatusBadRequest, msg: refusal}
-					}
-					return resp, statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"}
-				}
-				out, errOutput := codexBuildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, codexOpenAIImageResponseFormatFromJSON(body))
-				if errOutput != nil {
-					return resp, errOutput
-				}
-				return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
-			}
-		}
-	}
-
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	return cliproxyexecutor.Response{Payload: data, Headers: httpResp.Header.Clone()}, nil
@@ -435,7 +394,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	if errCache != nil {
 		return nil, errCache
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg)
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
@@ -997,12 +956,32 @@ func codexExtractImageResults(completed []byte, itemsByIndex map[int64][]byte, f
 		results = append(results, entry)
 	}
 
-	outputItems := codexCollectImageOutputItems(completed, itemsByIndex, fallback)
+	var outputItems []gjson.Result
+	if output := gjson.GetBytes(completed, "response.output"); output.Exists() && output.IsArray() {
+		outputItems = output.Array()
+	}
 	if len(outputItems) > 0 {
 		// Completed event already carries the output; extract from it in place.
 		results = make([]codexImageCallResult, 0, len(outputItems))
 		for _, item := range outputItems {
 			appendItem(item)
+		}
+	} else if len(itemsByIndex) > 0 || len(fallback) > 0 {
+		// Completed output was empty; extract directly from the collected items,
+		// preserving their original output_index ordering.
+		results = make([]codexImageCallResult, 0, len(itemsByIndex)+len(fallback))
+		if len(itemsByIndex) > 0 {
+			indexes := make([]int64, 0, len(itemsByIndex))
+			for idx := range itemsByIndex {
+				indexes = append(indexes, idx)
+			}
+			sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
+			for _, idx := range indexes {
+				appendItem(gjson.ParseBytes(itemsByIndex[idx]))
+			}
+		}
+		for _, raw := range fallback {
+			appendItem(gjson.ParseBytes(raw))
 		}
 	}
 
@@ -1010,80 +989,6 @@ func codexExtractImageResults(completed []byte, itemsByIndex map[int64][]byte, f
 		usageRaw = []byte(usage.Raw)
 	}
 	return results, createdAt, usageRaw, firstMeta, nil
-}
-
-func codexExtractImageFailureMessage(completed []byte, itemsByIndex map[int64][]byte, fallback [][]byte) string {
-	if gjson.GetBytes(completed, "type").String() != "response.completed" {
-		return ""
-	}
-
-	outputItems := codexCollectImageOutputItems(completed, itemsByIndex, fallback)
-	sawFailedImage := false
-	for _, item := range outputItems {
-		if item.Get("type").String() == "image_generation_call" &&
-			strings.EqualFold(strings.TrimSpace(item.Get("status").String()), "failed") &&
-			strings.TrimSpace(item.Get("result").String()) == "" {
-			sawFailedImage = true
-			break
-		}
-	}
-	if !sawFailedImage {
-		return ""
-	}
-
-	for _, item := range outputItems {
-		message := codexOutputMessageText(item)
-		if message != "" {
-			return message
-		}
-	}
-
-	return "Image generation request was refused by the upstream provider."
-}
-
-func codexCollectImageOutputItems(completed []byte, itemsByIndex map[int64][]byte, fallback [][]byte) []gjson.Result {
-	if output := gjson.GetBytes(completed, "response.output"); output.Exists() && output.IsArray() && len(output.Array()) > 0 {
-		return output.Array()
-	}
-
-	if len(itemsByIndex) == 0 && len(fallback) == 0 {
-		return nil
-	}
-
-	outputItems := make([]gjson.Result, 0, len(itemsByIndex)+len(fallback))
-	if len(itemsByIndex) > 0 {
-		indexes := make([]int64, 0, len(itemsByIndex))
-		for idx := range itemsByIndex {
-			indexes = append(indexes, idx)
-		}
-		sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
-		for _, idx := range indexes {
-			outputItems = append(outputItems, gjson.ParseBytes(itemsByIndex[idx]))
-		}
-	}
-	for _, raw := range fallback {
-		outputItems = append(outputItems, gjson.ParseBytes(raw))
-	}
-	return outputItems
-}
-
-func codexOutputMessageText(item gjson.Result) string {
-	if item.Get("type").String() != "message" {
-		return ""
-	}
-
-	var builder strings.Builder
-	for _, part := range item.Get("content").Array() {
-		if part.Get("type").String() != "output_text" {
-			continue
-		}
-		text := part.Get("text").String()
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		builder.WriteString(text)
-	}
-	return strings.TrimSpace(builder.String())
 }
 
 func codexBuildImagesAPIResponse(results []codexImageCallResult, createdAt int64, usageRaw []byte, firstMeta codexImageCallResult, responseFormat string) ([]byte, error) {
