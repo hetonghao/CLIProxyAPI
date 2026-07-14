@@ -55,6 +55,18 @@ func (e *codexSearchCaptureExecutor) PrepareRequest(req *http.Request, a *auth.A
 	return nil
 }
 
+type codexSearchGinContextSelector struct {
+	ginContext *gin.Context
+}
+
+func (s *codexSearchGinContextSelector) Pick(ctx context.Context, _ string, _ string, _ coreexecutor.Options, auths []*auth.Auth) (*auth.Auth, error) {
+	s.ginContext, _ = ctx.Value("gin").(*gin.Context)
+	if len(auths) == 0 {
+		return nil, nil
+	}
+	return auths[0], nil
+}
+
 func (e *codexSearchCaptureExecutor) HttpRequest(_ context.Context, selected *auth.Auth, req *http.Request) (*http.Response, error) {
 	e.request = req.Clone(req.Context())
 	e.authIDs = append(e.authIDs, selected.ID)
@@ -185,6 +197,38 @@ func TestCodexAlphaSearchForwardsRequest(t *testing.T) {
 	}
 	if got := rr.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("response Content-Type = %q", got)
+	}
+}
+
+func TestCodexAlphaSearchPassesGinContextToAuthSelection(t *testing.T) {
+	server := newTestServer(t)
+	selector := &codexSearchGinContextSelector{}
+	server.handlers.AuthManager.SetSelector(selector)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	credential := &auth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{"access_token": "codex-token"},
+	}
+	if _, errRegister := server.handlers.AuthManager.Register(context.Background(), credential); errRegister != nil {
+		t.Fatalf("register Codex auth: %v", errRegister)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search?key=home-query-key", strings.NewReader(`{"query":"GPT-5.6"}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if selector.ginContext == nil {
+		t.Fatal("auth selection did not receive the Gin context required by Home scheduling")
+	}
+	if got := selector.ginContext.Query("key"); got != "home-query-key" {
+		t.Fatalf("Gin query key = %q, want %q", got, "home-query-key")
 	}
 }
 
@@ -875,8 +919,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
-	if got := int(codexClientTestPriority(custom["priority"])); got != 143 {
-		t.Fatalf("custom priority = %v, want 143", custom["priority"])
+	wantCustomPriority := codexClientTestMaxTemplatePriority(t) + 100
+	if got := int(codexClientTestPriority(custom["priority"])); got != wantCustomPriority {
+		t.Fatalf("custom priority = %v, want %d", custom["priority"], wantCustomPriority)
 	}
 	if got, _ := custom["description"].(string); got != "Custom model from registry" {
 		t.Fatalf("custom description = %q, want Custom model from registry", got)
@@ -941,6 +986,23 @@ func codexClientTestPriority(raw any) int {
 	default:
 		return -1
 	}
+}
+
+func codexClientTestMaxTemplatePriority(t *testing.T) int {
+	t.Helper()
+	var payload struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
+		t.Fatalf("parse Codex client model templates: %v", err)
+	}
+	maxPriority := 0
+	for _, model := range payload.Models {
+		if priority := codexClientTestPriority(model["priority"]); priority > maxPriority {
+			maxPriority = priority
+		}
+	}
+	return maxPriority
 }
 
 func assertCodexSupportedReasoningLevels(t *testing.T, model map[string]any, want []string) {
