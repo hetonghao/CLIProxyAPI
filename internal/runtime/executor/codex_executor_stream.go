@@ -148,7 +148,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
-				data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+				data = helps.NormalizeCodexImageGenerationCompletion(helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2))
 				translatedLine = append([]byte("data: "), data...)
 				eventType := gjson.GetBytes(data, "type").String()
 				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
