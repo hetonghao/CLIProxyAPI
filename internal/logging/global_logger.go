@@ -38,6 +38,13 @@ var logFieldOrder = []string{
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
 	"credential", "connection", "proxy_scheme", "remote_transport",
 	"media_session_id", "call_id", "peer", "state", "reason",
+	"event", "session_digest", "auth_digest",
+	"downstream_trace", "downstream_ordinal", "upstream_trace", "upstream_generation", "upstream_ordinal",
+	"request_state", "terminal_seen", "cleanup_or_failure_accounted", "failure_accounted",
+	"last_application_rx_age_ms", "last_ping_rx_age_ms", "last_ping_tx_age_ms", "last_pong_rx_age_ms", "read_deadline_remaining_ms",
+	"close_reason", "close_code", "failure_reason", "network_error_kind",
+	"active_channel_messages", "active_channel_bytes", "active_channel_capacity",
+	"heap_alloc", "heap_idle", "heap_released", "goroutines", "opened", "closed", "cleanup",
 }
 
 var quotedLogFields = map[string]struct{}{
