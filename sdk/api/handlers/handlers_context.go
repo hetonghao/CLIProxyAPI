@@ -6,6 +6,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"golang.org/x/net/context"
 )
 
@@ -16,6 +19,8 @@ type selectedAuthCallbackContextKey struct{}
 type preparedModelRouteContextKey struct{}
 
 type executionSessionContextKey struct{}
+
+type websocketTraceContextKey struct{}
 
 type disallowFreeAuthContextKey struct{}
 
@@ -75,6 +80,18 @@ func WithExecutionSessionID(ctx context.Context, sessionID string) context.Conte
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
+}
+
+// WithWebsocketTrace returns a child context tagged with the server-generated websocket trace.
+func WithWebsocketTrace(ctx context.Context, trace string) context.Context {
+	trace = strings.TrimSpace(trace)
+	if trace == "" {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, websocketTraceContextKey{}, trace)
 }
 
 // WithDisallowFreeAuth returns a child context that requests skipping known free-tier credentials.
@@ -153,10 +170,75 @@ func executionSessionIDFromContext(ctx context.Context) string {
 	}
 }
 
+func websocketTraceFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(websocketTraceContextKey{})
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	default:
+		return ""
+	}
+}
+
 func disallowFreeAuthFromContext(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
 	raw, ok := ctx.Value(disallowFreeAuthContextKey{}).(bool)
 	return ok && raw
+}
+
+func requestExecutionMetadata(ctx context.Context) map[string]any {
+	// Idempotency-Key is an optional client-supplied header used to correlate retries.
+	// Only include it if the client explicitly provides it.
+	key := ""
+	requestPath := ""
+	var ginCtx *gin.Context
+	if ctx != nil {
+		if requestGinCtx, ok := ctx.Value("gin").(*gin.Context); ok && requestGinCtx != nil && requestGinCtx.Request != nil {
+			ginCtx = requestGinCtx
+			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
+			requestPath = strings.TrimSpace(ginCtx.FullPath())
+			if requestPath == "" && ginCtx.Request.URL != nil {
+				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
+			}
+		}
+	}
+
+	meta := make(map[string]any)
+	if key != "" {
+		meta[idempotencyKeyMetadataKey] = key
+	}
+	if requestPath != "" {
+		meta[coreexecutor.RequestPathMetadataKey] = requestPath
+	}
+	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
+		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
+	}
+	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
+		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
+	}
+	if ginCtx != nil && !websocket.IsWebSocketUpgrade(ginCtx.Request) {
+		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
+			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
+		}
+	}
+	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
+		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
+	}
+	if websocketTrace := websocketTraceFromContext(ctx); websocketTrace != "" {
+		meta[coreexecutor.WebsocketTraceMetadataKey] = websocketTrace
+	}
+	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
+		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
+	}
+	if disallowFreeAuthFromContext(ctx) {
+		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
+	}
+	return meta
 }

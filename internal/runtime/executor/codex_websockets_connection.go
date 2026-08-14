@@ -143,6 +143,9 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 			if !ok {
 				return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed")
 			}
+			if ev.queue != nil {
+				ev.queue.remove(len(ev.payload))
+			}
 			if ev.conn != conn {
 				continue
 			}

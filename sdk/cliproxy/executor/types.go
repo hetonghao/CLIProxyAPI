@@ -44,6 +44,8 @@ const (
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
+	// WebsocketTraceMetadataKey carries the server-generated downstream websocket trace internally.
+	WebsocketTraceMetadataKey = "websocket_trace"
 	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
 	DerivedSessionIDMetadataKey = "derived_session_id"
 	// CallerScopeMetadataKey isolates inferred session identities between downstream callers.

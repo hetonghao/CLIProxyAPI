@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -150,53 +149,6 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 // Default is false.
 func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 	return cfg != nil && cfg.PassthroughHeaders
-}
-
-func requestExecutionMetadata(ctx context.Context) map[string]any {
-	// Idempotency-Key is an optional client-supplied header used to correlate retries.
-	// Only include it if the client explicitly provides it.
-	key := ""
-	requestPath := ""
-	var ginCtx *gin.Context
-	if ctx != nil {
-		if requestGinCtx, ok := ctx.Value("gin").(*gin.Context); ok && requestGinCtx != nil && requestGinCtx.Request != nil {
-			ginCtx = requestGinCtx
-			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
-			requestPath = strings.TrimSpace(ginCtx.FullPath())
-			if requestPath == "" && ginCtx.Request.URL != nil {
-				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
-			}
-		}
-	}
-
-	meta := make(map[string]any)
-	if key != "" {
-		meta[idempotencyKeyMetadataKey] = key
-	}
-	if requestPath != "" {
-		meta[coreexecutor.RequestPathMetadataKey] = requestPath
-	}
-	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
-		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
-	}
-	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
-		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
-	}
-	if ginCtx != nil && !websocket.IsWebSocketUpgrade(ginCtx.Request) {
-		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
-			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
-		}
-	}
-	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
-		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
-	}
-	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
-		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
-	}
-	if disallowFreeAuthFromContext(ctx) {
-		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
-	}
-	return meta
 }
 
 func requestClientIP(request *http.Request) string {

@@ -41,14 +41,6 @@ const (
 	codexLocalCompactionSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
 )
 
-var responsesWebsocketUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
 // writeWebsocketCloseForUpstreamError mirrors transport-level upstream close
 // codes to the downstream WebSocket client before the connection is torn down.
 // Without this the client only observes an abnormal closure (1006) and cannot
@@ -252,7 +244,7 @@ func truncateWebsocketCloseReason(reason string, maxBytes int) string {
 // It accepts `response.create` and `response.append` requests and streams
 // response events back as JSON websocket text messages.
 func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
-	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, websocketUpgradeHeaders(c.Request))
+	conn, serverTrace, err := upgradeResponsesWebsocket(c)
 	if err != nil {
 		return
 	}
@@ -405,6 +397,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			requestModelName = strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
 		}
 		executionParent := context.WithValue(c.Request.Context(), "gin", c)
+		executionParent = handlers.WithWebsocketTrace(executionParent, serverTrace)
 		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
 			executionParent,
 			h.HandlerType(),
@@ -678,20 +671,6 @@ func websocketClientAddress(c *gin.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(c.ClientIP())
-}
-
-func websocketUpgradeHeaders(req *http.Request) http.Header {
-	headers := http.Header{}
-	if req == nil {
-		return headers
-	}
-
-	// Keep the same sticky turn-state across reconnects when provided by the client.
-	turnState := strings.TrimSpace(req.Header.Get(wsTurnStateHeader))
-	if turnState != "" {
-		headers.Set(wsTurnStateHeader, turnState)
-	}
-	return headers
 }
 
 func responsesWebsocketPreviousResponseNotFoundError() *interfaces.ErrorMessage {

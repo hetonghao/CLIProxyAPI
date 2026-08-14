@@ -96,6 +96,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		if sess != nil {
+			sess.setDownstreamTrace(helps.WebsocketTraceFromOptions(opts))
 			sess.reqMu.Lock()
 		}
 	}
@@ -180,10 +181,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		logCodexWebsocketConnected(executionSessionID, authID, wsURL)
 	}
 
-	var readCh chan codexWebsocketRead
-	if sess != nil {
-		readCh = sess.activate(conn)
-	}
+	readCh := sess.activateRequest(conn)
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
@@ -257,6 +255,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, errSend
 		}
 	}
+	sess.commitRequest(conn)
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(conn, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -385,6 +384,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 			eventType := gjson.GetBytes(payload, "type").String()
 			isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+			sess.markTerminal(conn, eventType)
 			if eventType == "response.output_item.done" {
 				collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 			}

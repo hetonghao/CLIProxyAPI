@@ -107,6 +107,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
+		sess.setDownstreamTrace(helps.WebsocketTraceFromOptions(opts))
 		sess.reqMu.Lock()
 		sessionLocked = true
 		defer unlockSession()
@@ -176,13 +177,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}()
 	}
 
-	var readCh chan codexWebsocketRead
-	if sess != nil {
-		readCh = sess.activate(conn)
-		defer func() {
-			sess.clearActive(conn, readCh)
-		}()
-	}
+	readCh := sess.activateRequest(conn)
+	defer sess.clearActiveAfterRequest(conn, readCh)
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
@@ -250,6 +246,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, errSend
 		}
 	}
+	sess.commitRequest(conn)
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(conn, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -311,6 +308,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 		payload = normalizeCodexWebsocketCompletion(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
+		sess.markTerminal(conn, eventType)
 		switch eventType {
 		case "response.output_item.done":
 			collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
