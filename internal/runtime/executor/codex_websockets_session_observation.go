@@ -167,7 +167,6 @@ func (s *codexWebsocketSession) commitRequest(conn *websocket.Conn) {
 		return
 	}
 	s.updateObservation(conn, func(o *codexWebsocketObservation) { o.upstreamOrdinal++ })
-	logCodexWebsocketObservation("accepted", s, false)
 }
 
 func (s *codexWebsocketSession) markTerminal(conn *websocket.Conn, eventType string) {
@@ -175,7 +174,6 @@ func (s *codexWebsocketSession) markTerminal(conn *websocket.Conn, eventType str
 		return
 	}
 	s.updateObservation(conn, func(o *codexWebsocketObservation) { o.terminalSeen = true })
-	logCodexWebsocketObservation("terminal", s, false)
 }
 
 func (s *codexWebsocketSession) updateObservation(conn *websocket.Conn, update func(*codexWebsocketObservation)) {

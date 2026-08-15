@@ -88,7 +88,7 @@ func TestCodexWebsocketsExecuteStreamRecordsTraceLifecycleAndRuntimeFacts(t *tes
 	}
 
 	exec.CloseExecutionSession(executionSessionID)
-	var accepted, cleanup *log.Entry
+	var accepted, terminal, cleanup *log.Entry
 	for _, entry := range hook.AllEntries() {
 		if entry.Message != "codex websockets: observation" {
 			continue
@@ -96,15 +96,17 @@ func TestCodexWebsocketsExecuteStreamRecordsTraceLifecycleAndRuntimeFacts(t *tes
 		switch entry.Data["event"] {
 		case "accepted":
 			accepted = entry
+		case "terminal":
+			terminal = entry
 		case "cleanup":
 			cleanup = entry
 		}
 	}
-	if accepted == nil {
-		t.Fatal("missing structured websocket accepted diagnostic")
+	if accepted != nil {
+		t.Fatal("unexpected per-request websocket accepted diagnostic")
 	}
-	if got := accepted.Data["active_channel_capacity"]; got != int64(4096) {
-		t.Fatalf("active_channel_capacity = %#v, want 4096", got)
+	if terminal != nil {
+		t.Fatal("unexpected per-request websocket terminal diagnostic")
 	}
 	if cleanup == nil {
 		t.Fatal("missing structured websocket cleanup diagnostic")
