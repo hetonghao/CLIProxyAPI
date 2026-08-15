@@ -19,12 +19,15 @@ func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	s.resetUpstreamDisconnectError(conn)
 	conn.SetPingHandler(func(appData string) error {
 		s.updateObservation(conn, func(o *codexWebsocketObservation) { o.lastPingRx = time.Now() })
+		setCodexWebsocketReadDeadline(s, conn)
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 	})
-	conn.SetPongHandler(func(string) error {
+	conn.SetPongHandler(func(appData string) error {
 		s.updateObservation(conn, func(o *codexWebsocketObservation) { o.lastPongRx = time.Now() })
+		setCodexWebsocketReadDeadline(s, conn)
+		s.signalPong(conn, appData)
 		return nil
 	})
 	defaultCloseHandler := conn.CloseHandler()
@@ -35,6 +38,142 @@ func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 		s.setUpstreamDisconnectError(conn, &websocket.CloseError{Code: code, Text: text})
 		return defaultCloseHandler(code, text)
 	})
+}
+
+func configureCodexWebsocketLiveness(ctx context.Context, conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	conn.SetPingHandler(func(appData string) error {
+		setCodexWebsocketReadDeadlineForContext(ctx, nil, conn)
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
+	conn.SetPongHandler(func(string) error {
+		setCodexWebsocketReadDeadlineForContext(ctx, nil, conn)
+		return nil
+	})
+}
+
+func setCodexWebsocketReadDeadlineForContext(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := time.Now().Add(codexResponsesWebsocketIdleTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetReadDeadline(deadline)
+	if sess != nil {
+		sess.updateObservation(conn, func(o *codexWebsocketObservation) { o.readDeadline = deadline })
+	}
+}
+
+func setCodexWebsocketReadDeadline(sess *codexWebsocketSession, conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	deadline := time.Now().Add(codexResponsesWebsocketIdleTimeout)
+	_ = conn.SetReadDeadline(deadline)
+	if sess != nil {
+		sess.updateObservation(conn, func(o *codexWebsocketObservation) { o.readDeadline = deadline })
+	}
+}
+
+func (s *codexWebsocketSession) signalPong(conn *websocket.Conn, appData string) {
+	if s == nil || conn == nil {
+		return
+	}
+	s.pongMu.Lock()
+	if s.pongWaitConn == conn && s.pongWait != nil && s.pongWaitData == appData {
+		wait := s.pongWait
+		s.pongWaitConn = nil
+		s.pongWait = nil
+		s.pongWaitData = ""
+		close(wait)
+	}
+	s.pongMu.Unlock()
+}
+
+func (s *codexWebsocketSession) clearPongWait(conn *websocket.Conn, wait chan struct{}) {
+	if s == nil {
+		return
+	}
+	s.pongMu.Lock()
+	if s.pongWaitConn == conn && s.pongWait == wait {
+		s.pongWaitConn = nil
+		s.pongWait = nil
+		s.pongWaitData = ""
+	}
+	s.pongMu.Unlock()
+}
+
+func (s *codexWebsocketSession) probeConnection(ctx context.Context, conn *websocket.Conn) error {
+	if s == nil || conn == nil {
+		return fmt.Errorf("codex websockets executor: websocket probe connection is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	wait := make(chan struct{})
+	s.pongMu.Lock()
+	s.pongWaitConn = conn
+	s.pongWait = wait
+	probeData := fmt.Sprintf("codex-probe-%d", time.Now().UnixNano())
+	s.pongWaitData = probeData
+	s.pongMu.Unlock()
+	defer s.clearPongWait(conn, wait)
+
+	s.updateObservation(conn, func(o *codexWebsocketObservation) { o.lastPingTx = time.Now() })
+	probeDeadline := time.Now().Add(codexResponsesWebsocketProbeTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(probeDeadline) {
+		probeDeadline = ctxDeadline
+	}
+	lockTimer := time.NewTimer(time.Until(probeDeadline))
+	lockTicker := time.NewTicker(time.Millisecond)
+	defer lockTimer.Stop()
+	defer lockTicker.Stop()
+	for !s.writeMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-lockTimer.C:
+			return fmt.Errorf("codex websockets executor: upstream websocket probe timed out waiting for write lock")
+		case <-lockTicker.C:
+		}
+	}
+	if time.Now().After(probeDeadline) {
+		s.writeMu.Unlock()
+		return fmt.Errorf("codex websockets executor: upstream websocket probe timed out waiting for write lock")
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		s.writeMu.Unlock()
+		return ctxErr
+	}
+	errWrite := conn.WriteControl(websocket.PingMessage, []byte(probeData), probeDeadline)
+	s.writeMu.Unlock()
+	if errWrite != nil {
+		return errWrite
+	}
+	remaining := time.Until(probeDeadline)
+	if remaining <= 0 {
+		return fmt.Errorf("codex websockets executor: upstream websocket probe timed out waiting for Pong")
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-wait:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("codex websockets executor: upstream websocket probe timed out waiting for Pong")
+	}
 }
 
 func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
@@ -109,9 +248,7 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		return
 	}
 	for {
-		deadline := time.Now().Add(codexResponsesWebsocketIdleTimeout)
-		_ = conn.SetReadDeadline(deadline)
-		sess.updateObservation(conn, func(o *codexWebsocketObservation) { o.readDeadline = deadline })
+		setCodexWebsocketReadDeadline(sess, conn)
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
 			invalidate := func() {

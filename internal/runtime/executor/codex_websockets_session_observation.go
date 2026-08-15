@@ -31,6 +31,11 @@ type codexWebsocketSession struct {
 
 	writeMu sync.Mutex
 
+	pongMu       sync.Mutex
+	pongWaitConn *websocket.Conn
+	pongWait     chan struct{}
+	pongWaitData string
+
 	activeMu     sync.Mutex
 	activeConn   *websocket.Conn
 	activeCh     chan codexWebsocketRead
@@ -89,7 +94,7 @@ type codexWebsocketObservation struct {
 	downstreamTrace, upstreamTrace      string
 	conn                                *websocket.Conn
 	lastApplicationRx                   time.Time
-	lastPingRx, lastPongRx              time.Time
+	lastPingRx, lastPingTx, lastPongRx  time.Time
 	readDeadline                        time.Time
 	downstreamOrdinal                   uint64
 	upstreamGeneration, upstreamOrdinal uint64
@@ -142,7 +147,7 @@ func (s *codexWebsocketSession) recordConnection(conn *websocket.Conn, responseH
 	s.observation.upstreamTrace = upstreamTrace
 	s.observation.authDigest = helps.ObservationDigestForDomain(websocketObservationKey, "auth", authID)
 	s.observation.lastApplicationRx = time.Time{}
-	s.observation.lastPingRx, s.observation.lastPongRx = time.Time{}, time.Time{}
+	s.observation.lastPingRx, s.observation.lastPingTx, s.observation.lastPongRx = time.Time{}, time.Time{}, time.Time{}
 	s.observation.readDeadline = time.Time{}
 	s.observation.upstreamGeneration++
 	s.observation.upstreamOrdinal = 0
@@ -233,7 +238,7 @@ func (s *codexWebsocketSession) observationSnapshot() codexWebsocketObservationS
 		requestState: requestState, sessionDigest: helps.ObservationDigestForDomain(websocketObservationKey, "session", s.sessionID), authDigest: o.authDigest,
 		lastApplicationRxAgeMS:  helps.ObservationAgeMS(now, o.lastApplicationRx),
 		lastPingRxAgeMS:         helps.ObservationAgeMS(now, o.lastPingRx),
-		lastPingTxAgeMS:         -1,
+		lastPingTxAgeMS:         helps.ObservationAgeMS(now, o.lastPingTx),
 		lastPongRxAgeMS:         helps.ObservationAgeMS(now, o.lastPongRx),
 		readDeadlineRemainingMS: helps.ObservationRemainingMS(now, o.readDeadline),
 		downstreamOrdinal:       o.downstreamOrdinal, upstreamGeneration: o.upstreamGeneration,

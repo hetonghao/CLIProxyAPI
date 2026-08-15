@@ -126,8 +126,26 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var closer *websocketConnectionCloser
 	var respHS *http.Response
 	var errDial error
-	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL)
+	requiredUpstreamWebsocket := cliproxyexecutor.RequiredUpstreamWebsocket(ctx)
+	reusableConn, reusableCloser := existingWebsocketSessionConn(sess, authID, wsURL)
+	if reusableConn != nil {
+		if errProbe := sess.probeConnection(ctx, reusableConn); errProbe != nil {
+			if ctx.Err() != nil {
+				if sess != nil {
+					sess.reqMu.Unlock()
+				}
+				return nil, ctx.Err()
+			}
+			if requiredUpstreamWebsocket {
+				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, reusableConn, "probe_failed", errProbe)
+			} else {
+				e.invalidateUpstreamConn(sess, reusableConn, "probe_failed", errProbe)
+			}
+			reusableConn, reusableCloser = nil, nil
+		}
+	}
+	if requiredUpstreamWebsocket {
+		conn, closer = reusableConn, reusableCloser
 		if conn == nil {
 			if sess != nil {
 				sess.reqMu.Unlock()
@@ -256,6 +274,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 	}
 	sess.commitRequest(conn)
+	firstApplicationCtx, cancelFirstApplication := context.WithTimeout(ctx, codexResponsesWebsocketFirstApplicationTimeout)
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(conn, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -265,6 +284,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	go func() {
 		terminateReason := "completed"
 		var terminateErr error
+		defer cancelFirstApplication()
+		firstApplication := true
 
 		defer close(out)
 		defer func() {
@@ -303,8 +324,17 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			readCtx := ctx
+			if firstApplication {
+				readCtx = firstApplicationCtx
+			}
+			msgType, payload, errRead := readCodexWebsocketMessage(readCtx, sess, conn, readCh)
 			if errRead != nil {
+				if firstApplication && firstApplicationCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+					terminateReason = "first_application_timeout"
+					terminateErr = errRead
+					e.invalidateUpstreamConn(sess, conn, "first_application_timeout", errRead)
+				}
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
 					terminateErr = ctx.Err()
@@ -334,10 +364,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				continue
 			}
-
 			payload = bytes.TrimSpace(payload)
 			if len(payload) == 0 {
 				continue
+			}
+			if firstApplication {
+				firstApplication = false
+				cancelFirstApplication()
 			}
 			reporter.MarkFirstResponseByte()
 			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
