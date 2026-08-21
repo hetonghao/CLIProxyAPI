@@ -65,6 +65,15 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 func codexResponsesWebsocketPayloadHasOutput(payload []byte) bool {
 	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
 	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata":
+		for _, path := range []string{
+			"response.usage.input_tokens",
+			"response.usage.output_tokens",
+			"response.usage.total_tokens",
+		} {
+			if gjson.GetBytes(payload, path).Int() > 0 {
+				return true
+			}
+		}
 		return false
 	default:
 		return true

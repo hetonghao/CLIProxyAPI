@@ -72,6 +72,9 @@ func TestCodexResponsesWebsocketPayloadHasOutput_isConservative(t *testing.T) {
 	if !codexResponsesWebsocketPayloadHasOutput([]byte(`{"type":"response.output_text.delta","delta":"x"}`)) {
 		t.Fatal("output event was treated as pre-output")
 	}
+	if !codexResponsesWebsocketPayloadHasOutput([]byte(`{"type":"response.created","response":{"usage":{"total_tokens":1}}}`)) {
+		t.Fatal("handshake usage event was treated as pre-output")
+	}
 	if !codexResponsesWebsocketPayloadHasOutput([]byte(`{"type":"future.event"}`)) {
 		t.Fatal("unknown event was not failed closed")
 	}
