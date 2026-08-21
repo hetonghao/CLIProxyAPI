@@ -208,6 +208,7 @@ func TestCodexResponsesWebsocketPayloadHasOutput_isConservative(t *testing.T) {
 		`{"type":"response.created","response":{"computer_call":{"id":"call-1"}}}`,
 		`{"type":"response.created","response":{"future_field":"unexpected"}}`,
 		`{"type":"response.created","future_field":"unexpected"}`,
+		`{"type":"codex.rate_limits","rate_limits":{"future_limit":{"used_percent":1}}}`,
 	} {
 		if !codexResponsesWebsocketPayloadHasOutput([]byte(event)) {
 			t.Fatalf("application-bearing handshake event treated as pre-output: %s", event)

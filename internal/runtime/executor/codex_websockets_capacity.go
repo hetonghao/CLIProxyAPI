@@ -135,8 +135,6 @@ func codexResponsesWebsocketOpaqueMetadataField(key, eventType string) bool {
 		// The private metadata event is protocol-only; its nested schema is
 		// intentionally open, while response/terminal metadata is scanned.
 		return eventType == "codex.response.metadata"
-	case "rate_limits":
-		return eventType == "codex.rate_limits"
 	default:
 		return false
 	}
