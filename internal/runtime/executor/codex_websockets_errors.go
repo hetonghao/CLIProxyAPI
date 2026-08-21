@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -56,75 +54,6 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 		statusErr: statusError,
 		headers:   headers,
 	}, true
-}
-
-// codexResponsesWebsocketPayloadHasOutput keeps the sideband fail-safe: only
-// known handshake metadata is considered pre-output. New event types are
-// treated as output so a future protocol addition cannot accidentally enable
-// replay after an unknown application event.
-func codexResponsesWebsocketPayloadHasOutput(payload []byte) bool {
-	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
-	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata":
-		for _, path := range []string{
-			"response.usage.input_tokens",
-			"response.usage.output_tokens",
-			"response.usage.total_tokens",
-		} {
-			if gjson.GetBytes(payload, path).Int() > 0 {
-				return true
-			}
-		}
-		return false
-	default:
-		return true
-	}
-}
-
-func codexResponsesWebsocketCapacityCode(payload []byte) (string, bool) {
-	for _, path := range []string{
-		"error.code",
-		"response.error.code",
-		"body.error.code",
-		"code",
-	} {
-		switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, path).String())) {
-		case "server_is_overloaded", "slow_down":
-			return strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, path).String())), true
-		}
-	}
-	for _, path := range []string{
-		"error.message",
-		"response.error.message",
-		"body.error.message",
-		"message",
-	} {
-		message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, path).String()))
-		if strings.Contains(message, "servers are currently overloaded") || strings.Contains(message, "server is overloaded") {
-			return "server_is_overloaded", true
-		}
-	}
-	if isCodexModelCapacityError(payload) {
-		return "model_capacity", true
-	}
-	return "", false
-}
-
-// maybeCodexResponsesWebsocketCapacityError attaches the typed sideband only
-// while no application output has been observed. Ordinary EOF, quota errors,
-// and post-output failures remain unchanged.
-func maybeCodexResponsesWebsocketCapacityError(err error, payload []byte, preOutput bool) error {
-	if !preOutput {
-		return err
-	}
-	var statusErr cliproxyexecutor.StatusError
-	if !errors.As(err, &statusErr) || statusErr == nil {
-		return err
-	}
-	code, ok := codexResponsesWebsocketCapacityCode(payload)
-	if !ok {
-		return err
-	}
-	return cliproxyexecutor.NewResponsesWebsocketCapacityRejectedError(statusErr, code)
 }
 
 func clearCodexReasoningReplayOnWebsocketError(ctx context.Context, scope codexReasoningReplayScope, payload []byte) error {

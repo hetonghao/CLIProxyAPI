@@ -959,7 +959,7 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 	sess.connMu.Unlock()
 
 	upstreamErr := errors.New("upstream gone")
-	exec.invalidateUpstreamConn(sess, conn, "test_invalidate", upstreamErr)
+	exec.invalidateUpstreamConnForResponsesWebsocketError(sess, conn, "test_invalidate", upstreamErr)
 
 	select {
 	case errRead, ok := <-disconnectCh:

@@ -5,6 +5,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -14,6 +15,14 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 
 func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithoutDisconnectNotify(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error) {
 	e.invalidateUpstreamConnWithNotify(sess, conn, reason, err, false)
+}
+
+func (e *CodexWebsocketsExecutor) invalidateUpstreamConnForResponsesWebsocketError(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error) {
+	if cliproxyexecutor.IsResponsesWebsocketCapacityRejected(err) {
+		e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, reason, err)
+		return
+	}
+	e.invalidateUpstreamConn(sess, conn, reason, err)
 }
 
 func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error, notify bool) {
