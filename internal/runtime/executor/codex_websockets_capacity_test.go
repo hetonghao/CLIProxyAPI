@@ -110,6 +110,18 @@ func TestMaybeCodexResponsesWebsocketCapacityError_rejectsOutputBearingErrorEnve
 			name:  "nonterminal state",
 			event: `{"type":"response.failed","response":{"status":"in_progress","error":{"code":"server_is_overloaded"}}}`,
 		},
+		{
+			name:  "terminal unknown tool object",
+			event: `{"type":"response.failed","response":{"status":"failed","server_tool_use":{"id":"call-1"},"error":{"code":"server_is_overloaded"}}}`,
+		},
+		{
+			name:  "terminal unknown scalar",
+			event: `{"type":"error","status":503,"computer_call":"call-1","error":{"code":"server_is_overloaded"}}`,
+		},
+		{
+			name:  "terminal nested unknown metadata",
+			event: `{"type":"response.failed","response":{"status":"failed","metadata":{"computer_call":"call-1"},"error":{"code":"server_is_overloaded"}}}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -171,8 +183,8 @@ func TestCodexResponsesWebsocketPayloadHasOutput_isConservative(t *testing.T) {
 	for _, event := range []string{
 		`{"type":"response.created"}`,
 		`{"type":"response.in_progress"}`,
-		`{"type":"codex.rate_limits"}`,
-		`{"type":"codex.response.metadata"}`,
+		`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":1}}}`,
+		`{"type":"codex.response.metadata","metadata":{"conversation_id":"conv_1"}}`,
 	} {
 		if codexResponsesWebsocketPayloadHasOutput([]byte(event)) {
 			t.Fatalf("handshake event treated as output: %s", event)
@@ -191,12 +203,35 @@ func TestCodexResponsesWebsocketPayloadHasOutput_isConservative(t *testing.T) {
 		`{"type":"response.created","response":{"output":[{"type":"function_call"}]}}`,
 		`{"type":"response.created","response":{"reasoning":{"summary":"started"}}}`,
 		`{"type":"response.created","response":{"tool_calls":[{"id":"call-1"}]}}`,
+		`{"type":"response.created","response":{"metadata":{"server_tool_use":{"id":"call-1"}}}}`,
+		`{"type":"response.created","response":{"server_tool_use":{"id":"call-1"}}}`,
+		`{"type":"response.created","response":{"computer_call":{"id":"call-1"}}}`,
+		`{"type":"response.created","response":{"future_field":"unexpected"}}`,
+		`{"type":"response.created","future_field":"unexpected"}`,
 	} {
 		if !codexResponsesWebsocketPayloadHasOutput([]byte(event)) {
 			t.Fatalf("application-bearing handshake event treated as pre-output: %s", event)
 		}
 	}
+	if codexResponsesWebsocketPayloadHasOutput([]byte(`{"type":"response.created","response":{"metadata":{"conversation_id":"conv-1"}}}`)) {
+		t.Fatal("known response metadata was treated as output")
+	}
 	if !codexResponsesWebsocketPayloadHasOutput([]byte(`{"type":"future.event"}`)) {
 		t.Fatal("unknown event was not failed closed")
+	}
+}
+
+func TestCodexResponsesWebsocketCapacityCode_acceptsDirectModelCapacityCode(t *testing.T) {
+	for _, payload := range []string{
+		`{"code":"model_capacity"}`,
+		`{"error":{"code":"model_capacity"}}`,
+		`{"body":{"code":"model_capacity"}}`,
+		`{"response":{"error":{"code":"model_capacity"}}}`,
+		`{"response":{"code":"model_capacity"}}`,
+	} {
+		code, ok := codexResponsesWebsocketCapacityCode([]byte(payload))
+		if !ok || code != "model_capacity" {
+			t.Fatalf("capacity code for %s = %q, %t; want model_capacity, true", payload, code, ok)
+		}
 	}
 }
