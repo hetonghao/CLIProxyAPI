@@ -265,6 +265,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	firstApplicationCtx, cancelFirstApplication := context.WithTimeout(ctx, codexResponsesWebsocketFirstApplicationTimeout)
 	defer cancelFirstApplication()
 	firstApplication := true
+	hasApplicationOutput := false
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(conn, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -314,6 +315,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
 		if wsErr, ok := parseCodexWebsocketError(payload); ok {
+			if cliproxyexecutor.DownstreamWebsocket(ctx) {
+				wsErr = maybeCodexResponsesWebsocketCapacityError(wsErr, payload, !hasApplicationOutput)
+			}
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 			}
@@ -324,14 +328,21 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, wsErr
 		}
 		if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
+			terminalErr := error(streamErr)
+			if cliproxyexecutor.DownstreamWebsocket(ctx) {
+				terminalErr = maybeCodexResponsesWebsocketCapacityError(streamErr, terminalBody, !hasApplicationOutput)
+			}
 			if sess != nil {
 				unlockSession()
-				e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
+				e.invalidateUpstreamConn(sess, conn, "terminal_failure", terminalErr)
 			}
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
 			}
-			return resp, streamErr
+			return resp, terminalErr
+		}
+		if codexResponsesWebsocketPayloadHasOutput(payload) {
+			hasApplicationOutput = true
 		}
 
 		payload = normalizeCodexWebsocketCompletion(payload)

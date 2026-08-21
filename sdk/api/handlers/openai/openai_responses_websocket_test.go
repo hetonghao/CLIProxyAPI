@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,6 +101,42 @@ func TestWebsocketReplayCloseRequiresTypedSignal(t *testing.T) {
 	}
 	if matched, _ := websocketClosePayloadForUpstreamError(spoofed); matched {
 		t.Fatal("untyped upstream error spoofed replay close")
+	}
+}
+
+type responsesWebsocketCapacityStatusError struct{}
+
+func (responsesWebsocketCapacityStatusError) Error() string { return "capacity" }
+
+func (responsesWebsocketCapacityStatusError) StatusCode() int { return http.StatusServiceUnavailable }
+
+func TestWebsocketCapacityCloseRequiresVersionedTypedSignal(t *testing.T) {
+	err := coreexecutor.NewResponsesWebsocketCapacityRejectedError(
+		responsesWebsocketCapacityStatusError{},
+		"server_is_overloaded",
+	)
+	matched, payload := websocketClosePayloadForUpstreamError(err)
+	if !matched || len(payload) == 0 {
+		t.Fatalf("typed capacity signal matched=%t payload_len=%d, want close payload", matched, len(payload))
+	}
+	if len(payload) < 2 {
+		t.Fatalf("capacity close payload too short: %d", len(payload))
+	}
+	code := int(binary.BigEndian.Uint16(payload[:2]))
+	reason := string(payload[2:])
+	if code != coreexecutor.ResponsesWebsocketCapacityCloseCode {
+		t.Fatalf("capacity close code = %d, want %d", code, coreexecutor.ResponsesWebsocketCapacityCloseCode)
+	}
+	wantReason := "ai-cove-capacity/v1;state=rejected;phase=pre_output;code=server_is_overloaded"
+	if reason != wantReason {
+		t.Fatalf("capacity close reason = %q, want %q", reason, wantReason)
+	}
+	if strings.Contains(reason, "capacity") && strings.Contains(reason, "Authorization") {
+		t.Fatal("capacity close reason leaked sensitive text")
+	}
+
+	if matched, _ := websocketClosePayloadForUpstreamError(errors.New("server_is_overloaded")); matched {
+		t.Fatal("untyped capacity-looking error spoofed close sideband")
 	}
 }
 

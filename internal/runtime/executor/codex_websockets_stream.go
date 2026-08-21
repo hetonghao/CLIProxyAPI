@@ -286,6 +286,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		var terminateErr error
 		defer cancelFirstApplication()
 		firstApplication := true
+		hasApplicationOutput := false
 
 		defer close(out)
 		defer func() {
@@ -378,6 +379,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
 			if wsErr, ok := parseCodexWebsocketError(payload); ok {
+				if cliproxyexecutor.DownstreamWebsocket(ctx) {
+					wsErr = maybeCodexResponsesWebsocketCapacityError(wsErr, payload, !hasApplicationOutput)
+				}
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				if sess != nil {
@@ -396,11 +400,15 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
+				terminalErr := error(streamErr)
+				if cliproxyexecutor.DownstreamWebsocket(ctx) {
+					terminalErr = maybeCodexResponsesWebsocketCapacityError(streamErr, terminalBody, !hasApplicationOutput)
+				}
 				terminateReason = "upstream_error"
-				terminateErr = streamErr
+				terminateErr = terminalErr
 				if sess != nil {
 					unlockStreamSession()
-					e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
+					e.invalidateUpstreamConn(sess, conn, "terminal_failure", terminalErr)
 				}
 				if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 					terminateErr = errClearReplay
@@ -410,9 +418,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					return
 				}
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
-				reporter.PublishFailure(ctx, streamErr)
-				_ = send(cliproxyexecutor.StreamChunk{Err: streamErr})
+				reporter.PublishFailure(ctx, terminalErr)
+				_ = send(cliproxyexecutor.StreamChunk{Err: terminalErr})
 				return
+			}
+			if codexResponsesWebsocketPayloadHasOutput(payload) {
+				hasApplicationOutput = true
 			}
 
 			eventType := gjson.GetBytes(payload, "type").String()

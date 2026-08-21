@@ -62,6 +62,15 @@ func websocketClosePayloadForUpstreamError(err error) (bool, []byte) {
 	}
 
 	errText := err.Error()
+	if capacityCode, ok := cliproxyexecutor.ResponsesWebsocketCapacityRejectedCode(err); ok {
+		reason := cliproxyexecutor.ResponsesWebsocketCapacityCloseReason(capacityCode)
+		if _, valid := cliproxyexecutor.ResponsesWebsocketCapacityCloseReasonCode(reason); valid {
+			return true, websocket.FormatCloseMessage(
+				cliproxyexecutor.ResponsesWebsocketCapacityCloseCode,
+				truncateWebsocketCloseReason(reason, wsCloseReasonMaxBytes),
+			)
+		}
+	}
 	if cliproxyexecutor.IsUpstreamWebsocketReplayRequired(err) {
 		return true, websocket.FormatCloseMessage(
 			websocket.CloseServiceRestart,
