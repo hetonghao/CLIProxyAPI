@@ -122,6 +122,7 @@ func codexResponsesWebsocketKnownPayloadField(key string) bool {
 	switch key {
 	case "type", "sequence_number", "response", "error", "body", "headers", "status", "status_code", "state", "code", "message", "error_type", "param", "metadata", "rate_limits",
 		"id", "object", "created_at", "model", "background", "parallel_tool_calls", "incomplete_details", "prompt_cache_key", "turn_id", "service_tier", "previous_response_id", "resets_at", "resets_in_seconds", "usage", "primary", "secondary", "used_percent", "conversation_id", "response_id", "request_id", "window_minutes", "reset_at", "reset_after_seconds", "remaining", "limit", "window",
+		"retry-after", "x-request-id", "openai-request-id", "content-type", "connection", "server",
 		"output", "output_text", "reasoning", "reasoning_content", "tool", "tools", "tool_calls", "tool_call", "function", "function_call", "custom_tool_call", "content", "item", "delta", "audio", "arguments", "recipient", "annotations":
 		return true
 	default:

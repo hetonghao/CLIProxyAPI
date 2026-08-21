@@ -33,7 +33,7 @@ func TestMaybeCodexResponsesWebsocketCapacityError_marksOnlyPreOutput(t *testing
 		t.Log("marked error preserves the original status error")
 	}
 
-	statusEvent := []byte(`{"type":"error","status":503,"error":{"type":"service_unavailable_error","code":"server_is_overloaded"}}`)
+	statusEvent := []byte(`{"type":"error","status":503,"headers":{"retry-after":"1"},"error":{"type":"service_unavailable_error","code":"server_is_overloaded"}}`)
 	if !cliproxyexecutor.IsResponsesWebsocketCapacityRejected(maybeCodexResponsesWebsocketCapacityError(base, statusEvent, true)) {
 		t.Fatal("plain HTTP-status capacity error was not marked")
 	}
