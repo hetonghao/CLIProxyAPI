@@ -175,7 +175,7 @@ func (s *codexWebsocketSession) commitRequest(conn *websocket.Conn) {
 }
 
 func (s *codexWebsocketSession) markTerminal(conn *websocket.Conn, eventType string) {
-	if s == nil || (eventType != "response.completed" && eventType != "response.done" && eventType != "error") {
+	if s == nil || (eventType != "response.completed" && eventType != "response.done" && eventType != "response.incomplete" && eventType != "response.failed" && eventType != "error") {
 		return
 	}
 	s.updateObservation(conn, func(o *codexWebsocketObservation) { o.terminalSeen = true })
