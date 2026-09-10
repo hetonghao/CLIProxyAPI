@@ -29,6 +29,13 @@ func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, pay
 	return multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, payload, cfg)
 }
 
+// RewriteCodexAgentMessageInput converts agent_message items into portable
+// Responses message/user input. Callers that always need this conversion,
+// such as xAI, should use this helper instead of the UA-gated optimizer.
+func RewriteCodexAgentMessageInput(payload []byte) []byte {
+	return multiagentv2.RewriteCodexAgentMessageInput(payload)
+}
+
 // RewriteCodexOrphanDelegationInput converts orphan Codex delegation outputs into
 // standard user messages when orphan delegation compatibility is enabled and the
 // request carries the X-Openai-Subagent: collab_spawn header.

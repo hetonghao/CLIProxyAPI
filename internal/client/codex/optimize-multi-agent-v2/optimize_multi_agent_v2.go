@@ -69,7 +69,7 @@ func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, pay
 	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
 		return payload
 	}
-	return rewriteCodexAgentMessageInput(payload)
+	return RewriteCodexAgentMessageInput(payload)
 }
 
 // RewriteCodexOrphanDelegationInputForConfig applies RewriteCodexOrphanDelegationInput
@@ -768,7 +768,10 @@ func restoreCodexCollaborationValue(value any) bool {
 	return changed
 }
 
-func rewriteCodexAgentMessageInput(payload []byte) []byte {
+// RewriteCodexAgentMessageInput converts Codex MultiAgentV2 agent_message items
+// into portable Responses message/user input without checking client UA or the
+// optimize-multi-agent-v2 flag.
+func RewriteCodexAgentMessageInput(payload []byte) []byte {
 	input := gjson.GetBytes(payload, "input")
 	if !input.IsArray() {
 		return payload

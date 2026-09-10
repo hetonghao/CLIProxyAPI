@@ -379,6 +379,27 @@ func TestXAIExecutorPrepareResponsesRequestRewritesCodexAgentMessage(t *testing.
 	}
 }
 
+func TestXAIExecutorPrepareResponsesRequestRewritesAgentMessageWithoutCodexGate(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	payload := []byte(`{"model":"grok-4.6","input":[{"type":"agent_message","id":"amsg_1","author":"/root","recipient":"/root/worker","content":[{"type":"input_text","text":"do the task"}]}]}`)
+	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.6",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Headers:      http.Header{"User-Agent": []string{"Go-http-client/1.1"}},
+	}, true)
+	if errPrepare != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	}
+	message := gjson.GetBytes(prepared.body, "input.0")
+	if message.Get("type").String() != "message" || message.Get("role").String() != "user" {
+		t.Fatalf("agent_message survived xAI prepare without Codex gate: %s", prepared.body)
+	}
+}
+
 func TestXAIExecutorExecuteFoldsNamespacesWhenToolsExceed200(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
