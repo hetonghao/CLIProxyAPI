@@ -36,7 +36,7 @@ func TestApplyCodexWebsocketHeadersRemovesResponseOnlyTrace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := applyCodexWebsocketHeaders(context.Background(), tt.headers, tt.auth, "", nil, tt.clientHeaders)
+			got := applyCodexWebsocketHeaders(context.Background(), tt.headers, tt.auth, "", nil, false, tt.clientHeaders)
 
 			if trace := got.Get(websocketTraceHeader); trace != "" {
 				t.Fatalf("response-only trace = %q, want absent", trace)

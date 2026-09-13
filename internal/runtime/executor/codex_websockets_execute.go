@@ -109,7 +109,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
-		sess.setDownstreamTrace(helps.WebsocketTraceFromOptions(opts))
 		sess.reqMu.Lock()
 		sessionLocked = true
 		defer unlockSession()
@@ -137,23 +136,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var respHS *http.Response
 	var errDial error
 	dialCtx := ctx
-	requiredUpstreamWebsocket := cliproxyexecutor.RequiredUpstreamWebsocket(ctx)
-	reusableConn, reusableCloser := existingWebsocketSessionConn(sess, authID, wsURL)
-	if reusableConn != nil {
-		if errProbe := sess.probeConnection(ctx, reusableConn); errProbe != nil {
-			if ctx.Err() != nil {
-				return resp, ctx.Err()
-			}
-			if requiredUpstreamWebsocket {
-				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, reusableConn, "probe_failed", errProbe)
-			} else {
-				e.invalidateUpstreamConn(sess, reusableConn, "probe_failed", errProbe)
-			}
-			reusableConn, reusableCloser = nil, nil
-		}
-	}
-	if requiredUpstreamWebsocket {
-		conn, closer = reusableConn, reusableCloser
+	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL)
 		if conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
@@ -201,8 +185,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}()
 	}
 
-	readCh := sess.activateRequest(conn)
-	defer sess.clearActiveAfterRequest(conn, readCh)
+	var readCh chan codexWebsocketRead
+	if sess != nil {
+		readCh = sess.activate(conn)
+		defer func() {
+			sess.clearActive(conn, readCh)
+		}()
+	}
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -279,11 +268,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, errSend
 		}
 	}
-	sess.commitRequest(conn)
-	firstApplicationCtx, cancelFirstApplication := context.WithTimeout(ctx, codexResponsesWebsocketFirstApplicationTimeout)
-	defer cancelFirstApplication()
-	firstApplication := true
-	hasApplicationOutput := false
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(conn, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -296,15 +280,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if ctx != nil && ctx.Err() != nil {
 			return resp, ctx.Err()
 		}
-		readCtx := ctx
-		if firstApplication {
-			readCtx = firstApplicationCtx
-		}
-		msgType, payload, errRead := readCodexWebsocketMessage(readCtx, sess, conn, readCh)
+		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 		if errRead != nil {
-			if firstApplication && firstApplicationCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-				e.invalidateUpstreamConn(sess, conn, "first_application_timeout", errRead)
-			}
 			mappedErr := mapCodexWebsocketReadError(errRead)
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
 			return resp, mappedErr
@@ -320,13 +297,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			}
 			continue
 		}
+
 		payload = bytes.TrimSpace(payload)
 		if len(payload) == 0 {
 			continue
-		}
-		if firstApplication {
-			firstApplication = false
-			cancelFirstApplication()
 		}
 		observeCodexTokenEvent(reporter, payload)
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
@@ -336,7 +310,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 		if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
 			if sess != nil {
-				e.invalidateUpstreamConnForResponsesWebsocketError(sess, conn, "upstream_error", wsErr)
+				e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 			}
 			if errClearReplay := clearCodexReasoningReplayOnWebsocketError(ctx, replayScope, payload); errClearReplay != nil {
 				return resp, errClearReplay
@@ -347,20 +321,16 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 			if sess != nil {
 				unlockSession()
-				e.invalidateUpstreamConnForResponsesWebsocketError(sess, conn, "terminal_failure", terminalErr)
+				e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
 			}
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
 			}
-			return resp, terminalErr
-		}
-		if codexResponsesWebsocketPayloadHasOutput(payload) {
-			hasApplicationOutput = true
+			return resp, streamErr
 		}
 
 		payload = normalizeCodexWebsocketCompletion(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
-		sess.markTerminal(conn, eventType)
 		if helps.HasMeaningfulCodexOutputDelta(payload) {
 			sawOutputDelta = true
 		}

@@ -99,7 +99,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		if sess != nil {
-			sess.setDownstreamTrace(helps.WebsocketTraceFromOptions(opts))
 			sess.reqMu.Lock()
 		}
 	} else {
@@ -185,7 +184,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		logCodexWebsocketConnected(executionSessionID, authID, wsURL)
 	}
 
-	readCh := sess.activateRequest(conn)
+	var readCh chan codexWebsocketRead
+	if sess != nil {
+		readCh = sess.activate(conn)
+	}
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -269,8 +271,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, errSend
 		}
 	}
-	sess.commitRequest(conn)
-	firstApplicationCtx, cancelFirstApplication := context.WithTimeout(ctx, codexResponsesWebsocketFirstApplicationTimeout)
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(conn, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -526,9 +526,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	go func() {
 		terminateReason := "completed"
 		var terminateErr error
-		defer cancelFirstApplication()
-		firstApplication := true
-		hasApplicationOutput := false
 
 		defer close(out)
 		defer func() {
@@ -566,17 +563,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			readCtx := ctx
-			if firstApplication {
-				readCtx = firstApplicationCtx
-			}
-			msgType, payload, errRead := readCodexWebsocketMessage(readCtx, sess, conn, readCh)
+			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 			if errRead != nil {
-				if firstApplication && firstApplicationCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-					terminateReason = "first_application_timeout"
-					terminateErr = errRead
-					e.invalidateUpstreamConn(sess, conn, "first_application_timeout", errRead)
-				}
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
 					terminateErr = ctx.Err()
@@ -606,13 +594,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				continue
 			}
+
 			payload = bytes.TrimSpace(payload)
 			if len(payload) == 0 {
 				continue
-			}
-			if firstApplication {
-				firstApplication = false
-				cancelFirstApplication()
 			}
 			observeCodexTokenEvent(reporter, payload)
 			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
@@ -624,7 +609,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				if sess != nil {
-					e.invalidateUpstreamConnForResponsesWebsocketError(sess, conn, "upstream_error", wsErr)
+					e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 				}
 				if errClearReplay := clearCodexReasoningReplayOnWebsocketError(ctx, replayScope, payload); errClearReplay != nil {
 					terminateErr = errClearReplay
@@ -640,10 +625,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
-				terminateErr = terminalErr
+				terminateErr = streamErr
 				if sess != nil {
 					unlockStreamSession()
-					e.invalidateUpstreamConnForResponsesWebsocketError(sess, conn, "terminal_failure", terminalErr)
+					e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
 				}
 				if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 					terminateErr = errClearReplay
@@ -653,17 +638,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					return
 				}
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
-				reporter.PublishFailure(ctx, terminalErr)
-				_ = send(cliproxyexecutor.StreamChunk{Err: terminalErr})
+				reporter.PublishFailure(ctx, streamErr)
+				_ = send(cliproxyexecutor.StreamChunk{Err: streamErr})
 				return
-			}
-			if codexResponsesWebsocketPayloadHasOutput(payload) {
-				hasApplicationOutput = true
 			}
 
 			eventType := gjson.GetBytes(payload, "type").String()
 			isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" || eventType == "error"
-			sess.markTerminal(conn, eventType)
 			if helps.HasMeaningfulCodexOutputDelta(payload) {
 				sawOutputDelta = true
 			}

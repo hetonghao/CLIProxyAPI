@@ -24,13 +24,8 @@ import (
 
 const (
 	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
+	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
-)
-
-var (
-	codexResponsesWebsocketIdleTimeout             = 5 * time.Minute
-	codexResponsesWebsocketFirstApplicationTimeout = 5 * time.Minute
-	codexResponsesWebsocketProbeTimeout            = 5 * time.Second
 )
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
@@ -157,20 +152,8 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 		if conn == nil {
 			return 0, nil, fmt.Errorf("codex websockets executor: websocket conn is nil")
 		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		configureCodexWebsocketLiveness(ctx, conn)
-		setCodexWebsocketReadDeadlineForContext(ctx, nil, conn)
+		_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
-		if errRead != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return 0, nil, ctxErr
-			}
-			if ctxDeadline, ok := ctx.Deadline(); ok && !time.Now().Before(ctxDeadline) {
-				return 0, nil, context.DeadlineExceeded
-			}
-		}
 		return msgType, payload, errRead
 	}
 	if conn == nil {
@@ -186,9 +169,6 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 		case ev, ok := <-readCh:
 			if !ok {
 				return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed")
-			}
-			if ev.queue != nil {
-				ev.queue.remove(len(ev.payload))
 			}
 			if ev.conn != conn {
 				continue
