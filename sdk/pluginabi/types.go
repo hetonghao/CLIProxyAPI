@@ -120,6 +120,7 @@ type Error struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable,omitempty"`
+	StopRetry bool   `json:"stop_retry,omitempty"`
 	// HTTPStatus is the HTTP status code (e.g. 401, 403, 429) to surface to the client.
 	// When omitted or 0, CPA defaults to HTTP 500 (internal_server_error).
 	HTTPStatus int `json:"http_status,omitempty"`

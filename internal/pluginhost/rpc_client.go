@@ -46,6 +46,7 @@ type rpcError struct {
 	Code       string
 	message    string
 	statusCode int
+	stopRetry  bool
 }
 
 func (e rpcError) Error() string {
@@ -54,6 +55,10 @@ func (e rpcError) Error() string {
 
 func (e rpcError) StatusCode() int {
 	return e.statusCode
+}
+
+func (e rpcError) IsRequestStop() bool {
+	return e.stopRetry
 }
 
 type rpcResponseNormalizer struct {
@@ -368,6 +373,7 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 				Code:       strings.TrimSpace(envelope.Error.Code),
 				message:    message,
 				statusCode: envelope.Error.HTTPStatus,
+				stopRetry:  envelope.Error.StopRetry,
 			}
 		}
 		return zero, fmt.Errorf("plugin call failed")
