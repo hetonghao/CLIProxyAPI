@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/turnstate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -325,6 +326,14 @@ func isRequestTerminatedError(err error) bool {
 }
 
 func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+	// Drop a replayed X-Codex-Turn-State value that was not minted for the
+	// selected credential before interceptors can act on it.
+	if authID, _ := opts.Metadata[cliproxyexecutor.SelectedAuthMetadataKey].(string); strings.TrimSpace(authID) != "" {
+		if next, stripped := turnstate.StripForeign(opts.Headers, authID); stripped {
+			opts.Headers = next
+			logEntryWithRequestID(ctx).Infof("turn-state: dropped %s minted for another credential", turnstate.Header)
+		}
+	}
 	if opts.RequestAfterAuthInterceptor == nil {
 		return req, opts, nil
 	}
