@@ -1110,6 +1110,61 @@ func TestConvertInteractionsResponseToOpenAIResponses_MissingUsageDefaultsToZero
 	}
 }
 
+func TestConvertInteractionsResponseToOpenAIResponsesFoldsCacheWriteIntoInput(t *testing.T) {
+	// Interactions usage reports only the uncached prompt delta as input and keeps
+	// the bulk of the prompt in separate cache counters. Responses usage is
+	// inclusive, so downstream billing only sees the real prompt when the cache
+	// write is folded back into input_tokens and also reported on its own.
+	var param any
+	streamRaw := []byte(`data: {"interaction":{"id":"i_cache","model":"devin/gpt-6-astra","status":"completed","usage":{"total_input_tokens":3,"total_output_tokens":285,"total_cached_tokens":0,"cache_write_tokens":193148,"total_tokens":288}},"event_type":"interaction.completed"}`)
+	streamPayload := findResponsesEventPayload(ConvertInteractionsResponseToOpenAIResponses(context.Background(), "gpt-6-astra-api", nil, nil, streamRaw, &param), "response.completed")
+	if streamPayload == nil {
+		t.Fatalf("missing response.completed")
+	}
+	if got := gjson.GetBytes(streamPayload, "response.usage.input_tokens").Int(); got != 193151 {
+		t.Fatalf("stream input_tokens = %d, want 193151. Payload: %s", got, string(streamPayload))
+	}
+	if got := gjson.GetBytes(streamPayload, "response.usage.input_tokens_details.cache_write_tokens").Int(); got != 193148 {
+		t.Fatalf("stream cache_write_tokens = %d, want 193148. Payload: %s", got, string(streamPayload))
+	}
+	if got := gjson.GetBytes(streamPayload, "response.usage.output_tokens").Int(); got != 285 {
+		t.Fatalf("stream output_tokens = %d, want 285", got)
+	}
+	if got := gjson.GetBytes(streamPayload, "response.usage.total_tokens").Int(); got != 193436 {
+		t.Fatalf("stream total_tokens = %d, want 193436", got)
+	}
+
+	// Non-stream interactions responses carry the usage block at the root.
+	nonStreamRaw := []byte(`{"id":"i_cache","model":"devin/gpt-6-astra","status":"completed","steps":[],"usage":{"total_input_tokens":3,"total_output_tokens":10,"total_cached_tokens":0,"cache_write_tokens":14361,"total_tokens":13}}`)
+	nonStreamOut := ConvertInteractionsResponseToOpenAIResponsesNonStream(context.Background(), "gpt-6-astra-api", nil, nil, nonStreamRaw, nil)
+	if got := gjson.GetBytes(nonStreamOut, "usage.input_tokens").Int(); got != 14364 {
+		t.Fatalf("non-stream input_tokens = %d, want 14364. Output: %s", got, string(nonStreamOut))
+	}
+	if got := gjson.GetBytes(nonStreamOut, "usage.input_tokens_details.cache_write_tokens").Int(); got != 14361 {
+		t.Fatalf("non-stream cache_write_tokens = %d, want 14361. Output: %s", got, string(nonStreamOut))
+	}
+	if got := gjson.GetBytes(nonStreamOut, "usage.total_tokens").Int(); got != 14374 {
+		t.Fatalf("non-stream total_tokens = %d, want 14374", got)
+	}
+
+	// Sources without a cache-write counter keep the reported input untouched.
+	var paramNoCache any
+	plainRaw := []byte(`data: {"interaction":{"id":"i_plain","model":"gpt-test","status":"completed","usage":{"total_input_tokens":12,"total_output_tokens":4,"total_cached_tokens":2,"total_tokens":16}},"event_type":"interaction.completed"}`)
+	plainPayload := findResponsesEventPayload(ConvertInteractionsResponseToOpenAIResponses(context.Background(), "gpt-test", nil, nil, plainRaw, &paramNoCache), "response.completed")
+	if plainPayload == nil {
+		t.Fatalf("missing response.completed for plain usage")
+	}
+	if got := gjson.GetBytes(plainPayload, "response.usage.input_tokens").Int(); got != 12 {
+		t.Fatalf("plain input_tokens = %d, want 12. Payload: %s", got, string(plainPayload))
+	}
+	if got := gjson.GetBytes(plainPayload, "response.usage.total_tokens").Int(); got != 16 {
+		t.Fatalf("plain total_tokens = %d, want 16", got)
+	}
+	if gjson.GetBytes(plainPayload, "response.usage.input_tokens_details.cache_write_tokens").Exists() {
+		t.Fatalf("plain usage must not report cache_write_tokens. Payload: %s", string(plainPayload))
+	}
+}
+
 func TestConvertInteractionsResponseToOpenAIResponses_RestoresNamespaceAndCustomTool(t *testing.T) {
 	origRequest := []byte(`{
 		"model": "devin/gemini-3-7-flash",

@@ -678,6 +678,7 @@ func setResponsesUsageFromInteractions(out []byte, path string, usage gjson.Resu
 	var inputTokens int64
 	var outputTokens int64
 	var totalTokens int64
+	var cacheWriteTokens int64
 	if usage.Exists() {
 		if v, ok := firstUsageInt(usage, "input_tokens", "total_input_tokens"); ok {
 			inputTokens = v
@@ -685,8 +686,18 @@ func setResponsesUsageFromInteractions(out []byte, path string, usage gjson.Resu
 		if v, ok := firstUsageInt(usage, "output_tokens", "total_output_tokens"); ok {
 			outputTokens = v
 		}
+		// Interactions usage reports only the uncached prompt delta as input and
+		// keeps cache writes in their own counter, while Responses usage is
+		// inclusive: input_tokens must cover cache reads and cache writes too.
+		// Cache reads already reach input_tokens through the caller; fold the
+		// cache write back in, otherwise downstream billing only ever sees the
+		// tiny uncached delta instead of the whole prompt.
+		if v, ok := firstUsageInt(usage, "cache_write_tokens", "cache_creation_tokens"); ok {
+			cacheWriteTokens = v
+		}
+		inputTokens += cacheWriteTokens
 		if v, ok := firstUsageInt(usage, "total_tokens"); ok {
-			totalTokens = v
+			totalTokens = v + cacheWriteTokens
 		} else {
 			totalTokens = inputTokens + outputTokens
 		}
@@ -697,6 +708,9 @@ func setResponsesUsageFromInteractions(out []byte, path string, usage gjson.Resu
 	if usage.Exists() {
 		if v, ok := firstUsageInt(usage, "cached_tokens", "total_cached_tokens"); ok {
 			out, _ = sjson.SetBytes(out, path+".input_tokens_details.cached_tokens", v)
+		}
+		if cacheWriteTokens > 0 {
+			out, _ = sjson.SetBytes(out, path+".input_tokens_details.cache_write_tokens", cacheWriteTokens)
 		}
 		if v, ok := firstUsageInt(usage, "reasoning_tokens", "total_thought_tokens"); ok {
 			out, _ = sjson.SetBytes(out, path+".output_tokens_details.reasoning_tokens", v)
