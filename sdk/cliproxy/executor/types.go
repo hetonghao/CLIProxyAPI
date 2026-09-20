@@ -78,6 +78,11 @@ const (
 	SessionAffinityProviderMetadataKey = "session_affinity_provider"
 	// SessionAffinityModelMetadataKey carries the model used during session affinity selection.
 	SessionAffinityModelMetadataKey = "session_affinity_model"
+	// SchedulerPreferredAuthMetadataKey carries the auth ID chosen by the configured
+	// selector into a scheduler plugin request, so the plugin can honor the host
+	// selection (round-robin, session affinity, pinning, priority) instead of
+	// picking on its own.
+	SchedulerPreferredAuthMetadataKey = "scheduler_preferred_auth_id"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.

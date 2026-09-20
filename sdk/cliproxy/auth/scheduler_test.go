@@ -1084,6 +1084,99 @@ func TestManagerPluginSchedulerDefaultHighestPriorityOnly(t *testing.T) {
 	}
 }
 
+func TestManagerPluginSchedulerReceivesSelectorPreferredAuth(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"auth-a", "auth-b"} {
+		if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", id, errRegister)
+		}
+	}
+	scheduler := &fakePluginScheduler{
+		pick: func(_ context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
+			preferred, _ := req.Options.Metadata[cliproxyexecutor.SchedulerPreferredAuthMetadataKey].(string)
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: preferred}, true, nil
+		},
+	}
+	manager.SetPluginScheduler(scheduler)
+
+	var got []string
+	for i := 0; i < 4; i++ {
+		auth, _, errPick := manager.pickNext(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+		if errPick != nil {
+			t.Fatalf("pickNext() #%d error = %v", i, errPick)
+		}
+		got = append(got, auth.ID)
+	}
+	want := []string{"auth-a", "auth-b", "auth-a", "auth-b"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("pick sequence = %v, want host round-robin %v", got, want)
+		}
+	}
+	for i, req := range scheduler.requests {
+		preferred, _ := req.Options.Metadata[cliproxyexecutor.SchedulerPreferredAuthMetadataKey].(string)
+		if preferred != want[i] {
+			t.Fatalf("request %d preferred = %q, want %q", i, preferred, want[i])
+		}
+	}
+}
+
+func TestManagerPluginSchedulerPreservesSessionAffinity(t *testing.T) {
+	manager := NewManager(nil, NewSessionAffinitySelector(&RoundRobinSelector{}), nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"auth-a", "auth-b"} {
+		if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", id, errRegister)
+		}
+	}
+	scheduler := &fakePluginScheduler{
+		pick: func(_ context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
+			preferred, _ := req.Options.Metadata[cliproxyexecutor.SchedulerPreferredAuthMetadataKey].(string)
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: preferred}, true, nil
+		},
+	}
+	manager.SetPluginScheduler(scheduler)
+
+	sessionOpts := cliproxyexecutor.Options{Headers: http.Header{"Session-Id": []string{"sticky-session"}}}
+	first, _, errPick := manager.pickNext(context.Background(), "gemini", "", sessionOpts, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	for i := 0; i < 3; i++ {
+		got, _, errPick := manager.pickNext(context.Background(), "gemini", "", sessionOpts, nil)
+		if errPick != nil {
+			t.Fatalf("pickNext() #%d error = %v", i, errPick)
+		}
+		if got.ID != first.ID {
+			t.Fatalf("session pick #%d = %q, want bound %q", i, got.ID, first.ID)
+		}
+	}
+}
+
+func TestManagerPluginSchedulerUnhandledRunsSelectorOnce(t *testing.T) {
+	selector := &trackingSelector{}
+	manager := NewManager(nil, selector, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"auth-a", "auth-b"} {
+		if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", id, errRegister)
+		}
+	}
+	manager.SetPluginScheduler(&fakePluginScheduler{handled: false})
+
+	got, _, errPick := manager.pickNext(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	if got == nil || got.ID != "auth-b" {
+		t.Fatalf("picked auth = %v, want selector result auth-b", got)
+	}
+	if selector.calls != 1 {
+		t.Fatalf("selector.Pick calls = %d, want 1", selector.calls)
+	}
+}
+
 func TestManagerPluginSchedulerAcrossPrioritiesUnhandledFallsBackToHighestPriority(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["gemini"] = schedulerTestExecutor{}

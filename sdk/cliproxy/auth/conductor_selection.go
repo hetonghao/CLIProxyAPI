@@ -936,7 +936,7 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	return selected, true, nil
 }
 
-func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
+func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth, preferredAuthID string) (*Auth, bool, error) {
 	if scheduler == nil || len(candidates) == 0 {
 		return nil, false, nil
 	}
@@ -952,6 +952,12 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		Stream:     opts.Stream,
 		Options:    schedulerOptions(opts),
 		Candidates: schedulerAuthCandidates(candidates),
+	}
+	if preferredAuthID = strings.TrimSpace(preferredAuthID); preferredAuthID != "" {
+		if req.Options.Metadata == nil {
+			req.Options.Metadata = make(map[string]any)
+		}
+		req.Options.Metadata[cliproxyexecutor.SchedulerPreferredAuthMetadataKey] = preferredAuthID
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
@@ -1682,14 +1688,30 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	m.mu.RUnlock()
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
+	var preferred *Auth
+	var errPreferred error
+	selectorRan := false
+	if pluginScheduler != nil && selector != nil {
+		selectorRan = true
+		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		preferred, errPreferred = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+	}
+	preferredAuthID := ""
+	if preferred != nil {
+		preferredAuthID = preferred.ID
+	}
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available, preferredAuthID)
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
 		return nil, nil, errPick
 	}
 	if !handled {
-		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		if selectorRan {
+			selected, errPick = preferred, errPreferred
+		} else {
+			selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+			selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		}
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
@@ -2015,14 +2037,30 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	m.mu.RUnlock()
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
+	var preferred *Auth
+	var errPreferred error
+	selectorRan := false
+	if pluginScheduler != nil && selector != nil {
+		selectorRan = true
+		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		preferred, errPreferred = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+	}
+	preferredAuthID := ""
+	if preferred != nil {
+		preferredAuthID = preferred.ID
+	}
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available, preferredAuthID)
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
 		return nil, nil, "", errPick
 	}
 	if !handled {
-		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+		if selectorRan {
+			selected, errPick = preferred, errPreferred
+		} else {
+			selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+			selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+		}
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
