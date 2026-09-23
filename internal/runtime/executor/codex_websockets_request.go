@@ -113,7 +113,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		sessionFallback = uuid.NewString()
 	}
 	ensureCodexWebsocketSessionHeader(headers, ginHeaders, sessionFallback)
-	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking {
+	if nativeRequest && isCodexCloakingDisabled(cfg, auth) {
 		deleteHeaderCaseInsensitive(headers, "session_id")
 		deleteHeaderCaseInsensitive(headers, "conversation_id")
 		for key, values := range ginHeaders {
@@ -145,8 +145,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	}
 	req := (&http.Request{Header: headers}).WithContext(ctx)
 	util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
-	applyCodexCloakingHeaders(headers, cfg)
-	deleteHeaderCaseInsensitive(headers, websocketTraceHeader)
+	applyCodexCloakingHeaders(headers, cfg, auth)
 
 	return headers
 }
