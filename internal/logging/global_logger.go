@@ -56,7 +56,7 @@ var logFieldOrder = []string{
 	"plugin_id", "plugin_name", "source_id",
 	"version", "active_version", "retired_version", "overwritten",
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
-	"credential", "connection", "proxy_scheme", "remote_transport",
+	"credential", "auth_id", "connection", "proxy_scheme", "remote_transport",
 	"media_session_id", "call_id", "peer", "state", "reason",
 	"event", "session_digest", "auth_digest",
 	"downstream_trace", "downstream_ordinal", "upstream_trace", "upstream_generation", "upstream_ordinal",
@@ -69,6 +69,7 @@ var logFieldOrder = []string{
 
 var quotedLogFields = map[string]struct{}{
 	"credential":       {},
+	"auth_id":          {},
 	"connection":       {},
 	"proxy_scheme":     {},
 	"remote_transport": {},
@@ -104,7 +105,7 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 
 	reqID := "--------"
 	if id, ok := entry.Data["request_id"].(string); ok && id != "" {
-		reqID = id
+		reqID = ShortRequestID(id)
 	}
 
 	level := entry.Level.String()
