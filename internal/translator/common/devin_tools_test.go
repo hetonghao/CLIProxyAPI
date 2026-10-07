@@ -1,7 +1,6 @@
 package common
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -74,26 +73,21 @@ func TestObfuscateWriteStdinDescription(t *testing.T) {
 }
 
 func TestSanitizeDevinToolDescription(t *testing.T) {
-	execDesc := "Runs a command in a bash shell, returning output or a session ID for ongoing interaction."
-	sanitizedExec := SanitizeDevinToolDescription("exec_command", execDesc)
-	if !strings.Contains(sanitizedExec, "an session ID") {
-		t.Errorf("SanitizeDevinToolDescription(exec_command) does not contain 'an session ID': %q", sanitizedExec)
+	// Codex code mode embeds nested tool docs inside the exec tool description.
+	embedded := "Run JavaScript code\n\n### `exec_command`\nRuns a command in a PTY, returning output or a session ID for ongoing interaction.\n\n" +
+		"### `write_stdin`\nWrites characters to an existing unified exec session and returns recent output.\n\nmore docs"
+	want := "Run JavaScript code\n\n### `exec_command`\nRuns a command in a PTY, returning output or an session ID for ongoing interaction.\n\n" +
+		"### `write_stdin`\nWrites characters to a existing unified exec session and returns recent output.\n\nmore docs"
+	got := SanitizeDevinToolDescription(embedded)
+	if got != want {
+		t.Fatalf("SanitizeDevinToolDescription(embedded) = %q, want %q", got, want)
+	}
+	if again := SanitizeDevinToolDescription(got); again != want {
+		t.Fatalf("SanitizeDevinToolDescription() idempotent = %q, want %q", again, want)
 	}
 
-	qualifiedExec := SanitizeDevinToolDescription("mcp__codex_app__exec_command", execDesc)
-	if !strings.Contains(qualifiedExec, "an session ID") {
-		t.Errorf("SanitizeDevinToolDescription(mcp__codex_app__exec_command) does not contain 'an session ID': %q", qualifiedExec)
-	}
-
-	stdinDesc := "Writes characters to an existing unified exec session and returns recent output."
-	sanitizedStdin := SanitizeDevinToolDescription("write_stdin", stdinDesc)
-	if !strings.Contains(sanitizedStdin, "to a existing unified exec session") {
-		t.Errorf("SanitizeDevinToolDescription(write_stdin) does not contain 'to a existing unified exec session': %q", sanitizedStdin)
-	}
-
-	otherDesc := "Writes characters to an existing unified exec session and returns recent output."
-	sanitizedOther := SanitizeDevinToolDescription("other_tool", otherDesc)
-	if sanitizedOther != otherDesc {
-		t.Errorf("SanitizeDevinToolDescription(other_tool) modified unrelated tool: %q", sanitizedOther)
+	unrelated := "Get weather for a city."
+	if got := SanitizeDevinToolDescription(unrelated); got != unrelated {
+		t.Fatalf("SanitizeDevinToolDescription(unrelated) = %q, want %q", got, unrelated)
 	}
 }

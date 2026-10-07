@@ -488,10 +488,7 @@ func appendResponsesToolsToInteractions(out []byte, root gjson.Result, forAntigr
 		}
 		if desc != "" {
 			if forDevin {
-				desc = translatorcommon.SanitizeDevinToolDescription(descriptor.Name, desc)
-				if descriptor.LocalName != "" && descriptor.LocalName != descriptor.Name {
-					desc = translatorcommon.SanitizeDevinToolDescription(descriptor.LocalName, desc)
-				}
+				desc = translatorcommon.SanitizeDevinToolDescription(desc)
 			}
 			item, _ = sjson.SetBytes(item, "description", desc)
 		}

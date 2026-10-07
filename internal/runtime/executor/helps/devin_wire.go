@@ -460,7 +460,7 @@ func BuildDevinGetChatMessageRequest(
 		if strings.Contains(desc, "Takes a task_id parameter identifying the task") {
 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
 		}
-		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
+		desc = translatorcommon.SanitizeDevinToolDescription(desc)
 		if desc != "" {
 			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
 			tBytes = protowire.AppendString(tBytes, desc)
@@ -1175,7 +1175,7 @@ func BuildDevinUpstreamLogBody(
 		if strings.Contains(desc, "Takes a task_id parameter identifying the task") {
 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
 		}
-		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
+		desc = translatorcommon.SanitizeDevinToolDescription(desc)
 		var params json.RawMessage
 		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
 			params = json.RawMessage(t.Parameters)

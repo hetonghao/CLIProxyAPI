@@ -827,6 +827,23 @@ func TestParseDevinResponseDimensionGroups_UnrelatedGroup(t *testing.T) {
 	}
 }
 
+func TestBuildDevinGetChatMessageRequest_ObfuscatesNestedToolDocsInCodeModeExec(t *testing.T) {
+	tools := []DevinTool{{
+		Name: "functions__exec",
+		Description: "Run JavaScript code\n### `exec_command`\nRuns a command in a PTY, returning output or a session ID for ongoing interaction.\n" +
+			"### `write_stdin`\nWrites characters to an existing unified exec session and returns recent output.\n",
+		Parameters: []byte(`{"type":"object"}`),
+	}}
+
+	reqStr := string(BuildDevinGetChatMessageRequest("token-123", "device-seed-1", "gpt-6-astra", "system prompt", nil, tools, nil, 1000, "session-1", "cascade-1", nil))
+	if strings.Contains(reqStr, "a session ID") || strings.Contains(reqStr, "to an existing unified") {
+		t.Fatalf("wire bytes still contain Devin-rejected phrases")
+	}
+	if !strings.Contains(reqStr, "an session ID") || !strings.Contains(reqStr, "to a existing unified") {
+		t.Fatalf("wire bytes should contain obfuscated phrases")
+	}
+}
+
 func TestBuildDevinGetChatMessageRequest_FiltersAutomationUpdateAndObfuscatesDescriptions(t *testing.T) {
 	tools := []DevinTool{
 		{

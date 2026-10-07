@@ -56,16 +56,11 @@ func ObfuscateWriteStdinDescription(desc string) string {
 }
 
 // SanitizeDevinToolDescription applies description obfuscation for Devin function tools.
-func SanitizeDevinToolDescription(toolName, desc string) string {
+// Devin upstream rejects these exact phrases wherever they appear, including when
+// Codex code mode embeds nested tool docs inside another tool's description.
+func SanitizeDevinToolDescription(desc string) string {
 	if desc == "" {
 		return desc
 	}
-	cleanTool := strings.ToLower(strings.TrimSpace(toolName))
-	if cleanTool == "exec_command" || strings.HasSuffix(cleanTool, "__exec_command") {
-		desc = ObfuscateExecCommandDescription(desc)
-	}
-	if cleanTool == "write_stdin" || strings.HasSuffix(cleanTool, "__write_stdin") {
-		desc = ObfuscateWriteStdinDescription(desc)
-	}
-	return desc
+	return ObfuscateWriteStdinDescription(ObfuscateExecCommandDescription(desc))
 }

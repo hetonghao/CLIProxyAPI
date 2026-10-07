@@ -1784,7 +1784,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 				return
 			}
 			desc := t.Get("description").String()
-			desc = translatorcommon.SanitizeDevinToolDescription(name, desc)
+			desc = translatorcommon.SanitizeDevinToolDescription(desc)
 			params := t.Get("parameters").Raw
 			if len(params) == 0 {
 				params = t.Get("parametersJsonSchema").Raw
