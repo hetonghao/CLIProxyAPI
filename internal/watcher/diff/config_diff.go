@@ -114,6 +114,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if !reflect.DeepEqual(oldCfg.Devin.SensitiveWords, newCfg.Devin.SensitiveWords) {
 		changes = append(changes, fmt.Sprintf("devin.sensitive-words: %d -> %d", len(oldCfg.Devin.SensitiveWords), len(newCfg.Devin.SensitiveWords)))
 	}
+	if oldCfg.Devin.HistoryImagePlaceholder != newCfg.Devin.HistoryImagePlaceholder {
+		changes = append(changes, fmt.Sprintf("devin.history-image-placeholder: %t -> %t", oldCfg.Devin.HistoryImagePlaceholder, newCfg.Devin.HistoryImagePlaceholder))
+	}
 	oldEnabled := "<nil>"
 	if oldCfg.Antigravity.ConnectionPool.Enabled != nil {
 		oldEnabled = fmt.Sprintf("%t", *oldCfg.Antigravity.ConnectionPool.Enabled)

@@ -674,6 +674,36 @@ func TestDevinExecutor_Refresh(t *testing.T) {
 	}
 }
 
+func TestDevinExecutor_CompressesLargeRequestBodies(t *testing.T) {
+	exec := NewDevinExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key"}}
+	largeText := strings.Repeat("long session history ", 120000)
+	payload := []byte(`{"input":[{"type":"user_input","content":[{"type":"text","text":"` + largeText + `"}]}]}`)
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatInteractions}
+
+	httpReq, _, _, err := exec.prepareDevinHTTPRequest(context.Background(), auth, cliproxyexecutor.Request{Model: "devin/swe-2", Payload: payload}, opts)
+	if err != nil {
+		t.Fatalf("prepareDevinHTTPRequest failed: %v", err)
+	}
+	if got := httpReq.Header.Get("Connect-Content-Encoding"); got != "gzip" {
+		t.Fatalf("Connect-Content-Encoding = %q, want gzip", got)
+	}
+	bodyBytes, err := io.ReadAll(httpReq.Body)
+	if err != nil {
+		t.Fatalf("read body failed: %v", err)
+	}
+	if len(bodyBytes) >= len(largeText) {
+		t.Fatalf("wire body %d should be smaller than the history text %d", len(bodyBytes), len(largeText))
+	}
+	flag, protoBytes, err := helps.ReadConnectFrame(bytes.NewReader(bodyBytes))
+	if err != nil || flag != helps.ConnectFlagCompressed {
+		t.Fatalf("unwrap failed: flag=%d err=%v", flag, err)
+	}
+	if !bytes.Contains(protoBytes, []byte(largeText)) {
+		t.Fatalf("decompressed payload must contain the full history text")
+	}
+}
+
 func TestDevinExecutor_MaxCompletionTokensClamping(t *testing.T) {
 	reg := registry.GetGlobalRegistry()
 	clientID := "test-devin-clamp-client"

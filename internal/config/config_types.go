@@ -152,6 +152,10 @@ type XAIConfig struct {
 type DevinConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system prompts and messages.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// HistoryImagePlaceholder replaces the oldest history images with text placeholders when a
+	// compressed request still exceeds the Devin upstream body limit. Newest images are kept.
+	HistoryImagePlaceholder bool `yaml:"history-image-placeholder,omitempty" json:"history-image-placeholder,omitempty"`
 }
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.

@@ -412,19 +412,19 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 
 	matcher := e.getSensitiveWordMatcher()
 
-	protoBytes := helps.BuildDevinGetChatMessageRequest(
-		apiKey,
-		deviceSeed,
-		chatModelUID,
-		systemPrompt,
-		prompts,
-		tools,
-		temp,
-		maxTokens,
-		sessionID,
-		cascadeID,
-		matcher,
-	)
+	build := func(p []helps.DevinPrompt) []byte {
+		return helps.BuildDevinGetChatMessageRequest(apiKey, deviceSeed, chatModelUID, systemPrompt, p, tools, temp, maxTokens, sessionID, cascadeID, matcher)
+	}
+	var protoBytes []byte
+	if e.cfg != nil && e.cfg.Devin.HistoryImagePlaceholder {
+		var omitted int
+		protoBytes, prompts, omitted = helps.FitDevinImagesToRequestLimit(prompts, build)
+		if omitted > 0 {
+			log.Warnf("devin executor: replaced %d oldest history image(s) with placeholders to fit the upstream request size limit", omitted)
+		}
+	} else {
+		protoBytes = build(prompts)
+	}
 
 	sanitizedSystemPrompt := systemPrompt
 	if systemPrompt != "" {
@@ -453,7 +453,7 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 		return nil, "", nil, errPayload
 	}
 
-	framed := helps.WrapConnectEnvelope(protoBytes)
+	framed, compressed := helps.WrapDevinRequestBody(protoBytes)
 	url := strings.TrimRight(baseURL, "/") + helps.DevinChatPath
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(framed))
@@ -463,6 +463,9 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, "", nil, err
+	}
+	if compressed {
+		httpReq.Header.Set("Connect-Content-Encoding", "gzip")
 	}
 
 	return httpReq, chatModelUID, logBody, nil

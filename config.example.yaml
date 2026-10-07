@@ -1061,6 +1061,10 @@ oauth:
     #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions and prompts
     #     - "API"
     #     - "proxy"
+    #   # Large requests are gzip-compressed automatically. When a compressed request still exceeds
+    #   # the Devin upstream 10 MiB body limit, replace the oldest history images with text
+    #   # placeholders (lossy; the newest images are kept). Defaults to false.
+    #   history-image-placeholder: false
 
 # Image and video behavior.
 multimedia:
