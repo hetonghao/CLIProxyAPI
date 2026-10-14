@@ -36,7 +36,10 @@ func init() {
 	}
 }
 
-const devinBuiltinSWE16SlowID = "devin/swe-1-6-slow"
+const (
+	devinBuiltinSWE16SlowID = "devin/swe-1-6-slow"
+	devinBuiltinGPT61SolID  = "devin/gpt-6-1-sol"
+)
 
 func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 	return &ModelInfo{
@@ -55,11 +58,30 @@ func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 	}
 }
 
-// WithDevinBuiltins injects hard-coded Devin model definitions that should
-// not depend on remote or embedded devin_models.json updates. Built-ins replace
-// any matching IDs already present in the provided slice.
+// WithDevinBuiltins preserves the SWE-1.6 Slow override and adds GPT-6.1 Sol
+// only when the catalog does not already define it.
 func WithDevinBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models, devinBuiltinSWE16SlowModelInfo())
+	models = upsertModelInfos(models, devinBuiltinSWE16SlowModelInfo())
+	for _, model := range models {
+		if strings.EqualFold(strings.TrimSpace(model.ID), devinBuiltinGPT61SolID) {
+			return models
+		}
+	}
+	return upsertModelInfos(models, &ModelInfo{
+		ID:                         devinBuiltinGPT61SolID,
+		Object:                     "model",
+		Type:                       "devin",
+		OwnedBy:                    "openai",
+		DisplayName:                "GPT-6.1 Sol",
+		ContextLength:              1000000,
+		MaxCompletionTokens:        128000,
+		InputTokenLimit:            1000000,
+		OutputTokenLimit:           128000,
+		SupportedInputModalities:   []string{"text", "image"},
+		SupportedOutputModalities:  []string{"text"},
+		SupportedGenerationMethods: []string{"generateContent", "countTokens"},
+		Thinking:                   &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	})
 }
 
 // GetDevinModels returns the active Devin model catalog.

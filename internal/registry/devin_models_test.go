@@ -325,8 +325,8 @@ func TestDevinSWE16Slow_Issue6111(t *testing.T) {
 func TestWithDevinBuiltins(t *testing.T) {
 	// Test WithDevinBuiltins with nil slice
 	builtins := WithDevinBuiltins(nil)
-	if len(builtins) != 1 {
-		t.Fatalf("expected 1 builtin model, got %d", len(builtins))
+	if len(builtins) != 2 {
+		t.Fatalf("expected 2 builtin models, got %d", len(builtins))
 	}
 	if builtins[0].ID != "devin/swe-1-6-slow" {
 		t.Errorf("expected ID 'devin/swe-1-6-slow', got %q", builtins[0].ID)
@@ -337,8 +337,8 @@ func TestWithDevinBuiltins(t *testing.T) {
 		{ID: "devin/swe-2", DisplayName: "SWE-2"},
 	}
 	merged := WithDevinBuiltins(existing)
-	if len(merged) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(merged))
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(merged))
 	}
 
 	// Test WithDevinBuiltins replaces duplicate
@@ -346,11 +346,62 @@ func TestWithDevinBuiltins(t *testing.T) {
 		{ID: "devin/swe-1-6-slow", DisplayName: "Old Display Name"},
 	}
 	replaced := WithDevinBuiltins(duplicate)
-	if len(replaced) != 1 {
-		t.Fatalf("expected 1 model after deduplication, got %d", len(replaced))
+	if len(replaced) != 2 {
+		t.Fatalf("expected 2 models after deduplication, got %d", len(replaced))
 	}
 	if replaced[0].DisplayName != "SWE-1.6 Slow" {
 		t.Errorf("expected DisplayName 'SWE-1.6 Slow', got %q", replaced[0].DisplayName)
+	}
+}
+
+func TestWithDevinBuiltinsAddsGPT61Sol(t *testing.T) {
+	models := WithDevinBuiltins([]*ModelInfo{{ID: "devin/gpt-6-sol"}})
+	var sol *ModelInfo
+	for _, model := range models {
+		if model.ID == "devin/gpt-6-1-sol" {
+			sol = model
+		}
+	}
+	if sol == nil {
+		t.Fatal("devin/gpt-6-1-sol missing from Devin catalog")
+	}
+	if sol.ContextLength != 1000000 || sol.MaxCompletionTokens != 128000 {
+		t.Fatalf("GPT-6.1 Sol limits = %d/%d, want 1000000/128000", sol.ContextLength, sol.MaxCompletionTokens)
+	}
+	if !reflect.DeepEqual(sol.SupportedInputModalities, []string{"text", "image"}) {
+		t.Fatalf("input modalities = %v, want text and image", sol.SupportedInputModalities)
+	}
+	if sol.Thinking == nil || !reflect.DeepEqual(sol.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("thinking support = %+v, want low through max without none", sol.Thinking)
+	}
+}
+
+func TestWithDevinBuiltinsPrefersUpstreamGPT61Sol(t *testing.T) {
+	upstream := &ModelInfo{
+		ID:                  "devin/gpt-6-1-sol",
+		DisplayName:         "Updated upstream model",
+		ContextLength:       2000000,
+		MaxCompletionTokens: 256000,
+		Thinking:            &ThinkingSupport{Levels: []string{"high"}},
+	}
+	models := WithDevinBuiltins([]*ModelInfo{{ID: "devin/gpt-6-sol"}, upstream})
+	var sol *ModelInfo
+	count, keptExisting := 0, false
+	for _, model := range models {
+		if model.ID == "devin/gpt-6-1-sol" {
+			sol = model
+			count++
+		}
+		if model.ID == "devin/gpt-6-sol" {
+			keptExisting = true
+		}
+	}
+	if count != 1 || !keptExisting {
+		t.Fatalf("GPT-6.1 Sol count = %d, existing model preserved = %v", count, keptExisting)
+	}
+	if sol.DisplayName != "Updated upstream model" || sol.ContextLength != 2000000 || sol.MaxCompletionTokens != 256000 ||
+		sol.Thinking == nil || !reflect.DeepEqual(sol.Thinking.Levels, []string{"high"}) {
+		t.Fatalf("upstream metadata was replaced: %+v", sol)
 	}
 }
 
