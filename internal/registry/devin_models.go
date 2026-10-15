@@ -58,30 +58,54 @@ func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 	}
 }
 
-// WithDevinBuiltins preserves the SWE-1.6 Slow override and adds GPT-6.1 Sol
-// only when the catalog does not already define it.
+// WithDevinBuiltins preserves the SWE-1.6 Slow override and adds missing
+// GPT-6.1 Sol and Gemini 4 Argon definitions without replacing upstream metadata.
 func WithDevinBuiltins(models []*ModelInfo) []*ModelInfo {
 	models = upsertModelInfos(models, devinBuiltinSWE16SlowModelInfo())
-	for _, model := range models {
-		if strings.EqualFold(strings.TrimSpace(model.ID), devinBuiltinGPT61SolID) {
-			return models
+	for _, builtin := range []*ModelInfo{
+		{
+			ID:                         devinBuiltinGPT61SolID,
+			Object:                     "model",
+			Type:                       "devin",
+			OwnedBy:                    "openai",
+			DisplayName:                "GPT-6.1 Sol",
+			ContextLength:              1000000,
+			MaxCompletionTokens:        128000,
+			InputTokenLimit:            1000000,
+			OutputTokenLimit:           128000,
+			SupportedInputModalities:   []string{"text", "image"},
+			SupportedOutputModalities:  []string{"text"},
+			SupportedGenerationMethods: []string{"generateContent", "countTokens"},
+			Thinking:                   &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+		},
+		{
+			ID:                         "devin/gemini-4-argon",
+			Object:                     "model",
+			Type:                       "devin",
+			OwnedBy:                    "google",
+			DisplayName:                "Gemini 4 Argon",
+			ContextLength:              1048576,
+			MaxCompletionTokens:        64000,
+			InputTokenLimit:            1048576,
+			OutputTokenLimit:           64000,
+			SupportedInputModalities:   []string{"text", "image"},
+			SupportedOutputModalities:  []string{"text"},
+			SupportedGenerationMethods: []string{"generateContent", "countTokens"},
+			Thinking:                   &ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		},
+	} {
+		found := false
+		for _, model := range models {
+			if strings.EqualFold(strings.TrimSpace(model.ID), builtin.ID) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			models = append(models, builtin)
 		}
 	}
-	return upsertModelInfos(models, &ModelInfo{
-		ID:                         devinBuiltinGPT61SolID,
-		Object:                     "model",
-		Type:                       "devin",
-		OwnedBy:                    "openai",
-		DisplayName:                "GPT-6.1 Sol",
-		ContextLength:              1000000,
-		MaxCompletionTokens:        128000,
-		InputTokenLimit:            1000000,
-		OutputTokenLimit:           128000,
-		SupportedInputModalities:   []string{"text", "image"},
-		SupportedOutputModalities:  []string{"text"},
-		SupportedGenerationMethods: []string{"generateContent", "countTokens"},
-		Thinking:                   &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
-	})
+	return models
 }
 
 // GetDevinModels returns the active Devin model catalog.

@@ -30,6 +30,22 @@ func TestResolveDevinChatModelUID_GPT61Sol(t *testing.T) {
 	}
 }
 
+func TestResolveDevinChatModelUID_Gemini4Argon(t *testing.T) {
+	for _, tt := range []struct{ model, effort, want string }{
+		{"devin/gemini-4-argon", "", "gemini-4-argon-high"},
+		{"devin/gemini-4-argon", "low", "gemini-4-argon-low"},
+		{"devin/gemini-4-argon", "medium", "gemini-4-argon-medium"},
+		{"devin/gemini-4-argon", "high", "gemini-4-argon-high"},
+		{"devin/gemini-4-argon", "max", "gemini-4-argon-high"},
+		{"devin/gemini-4-argon", "none", "gemini-4-argon-high"},
+		{"devin/gemini-4-argon(low)", "high", "gemini-4-argon-low"},
+	} {
+		if got := ResolveDevinChatModelUID(tt.model, tt.effort, 0); got != tt.want {
+			t.Errorf("ResolveDevinChatModelUID(%q, %q) = %q, want %q", tt.model, tt.effort, got, tt.want)
+		}
+	}
+}
+
 func TestResolveDevinChatModelUID(t *testing.T) {
 	tests := []struct {
 		name          string
