@@ -1260,13 +1260,10 @@ func TestConvertInteractionsResponseToOpenAIResponses_MissingUsageDefaultsToZero
 	}
 }
 
-func TestConvertInteractionsResponseToOpenAIResponsesFoldsCacheWriteIntoInput(t *testing.T) {
-	// Interactions usage reports only the uncached prompt delta as input and keeps
-	// the bulk of the prompt in separate cache counters. Responses usage is
-	// inclusive, so downstream billing only sees the real prompt when the cache
-	// write is folded back into input_tokens and also reported on its own.
+func TestConvertInteractionsResponseToOpenAIResponsesPreservesInclusiveCacheWriteUsage(t *testing.T) {
+	// Cache writes remain visible without being added to inclusive totals twice.
 	var param any
-	streamRaw := []byte(`data: {"interaction":{"id":"i_cache","model":"devin/gpt-6-astra","status":"completed","usage":{"total_input_tokens":3,"total_output_tokens":285,"total_cached_tokens":0,"cache_write_tokens":193148,"total_tokens":288}},"event_type":"interaction.completed"}`)
+	streamRaw := []byte(`data: {"interaction":{"id":"i_cache","model":"devin/gpt-6-astra","status":"completed","usage":{"total_input_tokens":193151,"total_output_tokens":285,"total_cached_tokens":0,"cache_write_tokens":193148,"total_tokens":193436}},"event_type":"interaction.completed"}`)
 	streamPayload := findResponsesEventPayload(ConvertInteractionsResponseToOpenAIResponses(context.Background(), "gpt-6-astra-api", nil, nil, streamRaw, &param), "response.completed")
 	if streamPayload == nil {
 		t.Fatalf("missing response.completed")
@@ -1285,7 +1282,7 @@ func TestConvertInteractionsResponseToOpenAIResponsesFoldsCacheWriteIntoInput(t 
 	}
 
 	// Non-stream interactions responses carry the usage block at the root.
-	nonStreamRaw := []byte(`{"id":"i_cache","model":"devin/gpt-6-astra","status":"completed","steps":[],"usage":{"total_input_tokens":3,"total_output_tokens":10,"total_cached_tokens":0,"cache_write_tokens":14361,"total_tokens":13}}`)
+	nonStreamRaw := []byte(`{"id":"i_cache","model":"devin/gpt-6-astra","status":"completed","steps":[],"usage":{"total_input_tokens":14364,"total_output_tokens":10,"total_cached_tokens":0,"cache_write_tokens":14361,"total_tokens":14374}}`)
 	nonStreamOut := ConvertInteractionsResponseToOpenAIResponsesNonStream(context.Background(), "gpt-6-astra-api", nil, nil, nonStreamRaw, nil)
 	if got := gjson.GetBytes(nonStreamOut, "usage.input_tokens").Int(); got != 14364 {
 		t.Fatalf("non-stream input_tokens = %d, want 14364. Output: %s", got, string(nonStreamOut))

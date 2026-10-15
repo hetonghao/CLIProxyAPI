@@ -954,18 +954,12 @@ func setResponsesUsageFromInteractions(out []byte, path string, usage gjson.Resu
 		if v, ok := firstUsageInt(usage, "output_tokens", "total_output_tokens"); ok {
 			outputTokens = v
 		}
-		// Interactions usage reports only the uncached prompt delta as input and
-		// keeps cache writes in their own counter, while Responses usage is
-		// inclusive: input_tokens must cover cache reads and cache writes too.
-		// Cache reads already reach input_tokens through the caller; fold the
-		// cache write back in, otherwise downstream billing only ever sees the
-		// tiny uncached delta instead of the whole prompt.
+		// Cache counters are subsets of the inclusive input total.
 		if v, ok := firstUsageInt(usage, "cache_write_tokens", "cache_creation_tokens"); ok {
 			cacheWriteTokens = v
 		}
-		inputTokens += cacheWriteTokens
 		if v, ok := firstUsageInt(usage, "total_tokens"); ok {
-			totalTokens = v + cacheWriteTokens
+			totalTokens = v
 		} else {
 			totalTokens = inputTokens + outputTokens
 		}

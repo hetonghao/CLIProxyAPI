@@ -355,6 +355,9 @@ func setOpenAIChatUsageFromInteractions(out []byte, path string, usage gjson.Res
 	if value, ok := interactionsUsageInt(usage, "cached_tokens", "total_cached_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".prompt_tokens_details.cached_tokens", value)
 	}
+	if value, ok := interactionsUsageInt(usage, "cache_write_tokens", "cache_creation_tokens"); ok && value > 0 {
+		out, _ = sjson.SetBytes(out, path+".prompt_tokens_details.cache_write_tokens", value)
+	}
 	if value, ok := interactionsUsageInt(usage, "reasoning_tokens", "total_thought_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".completion_tokens_details.reasoning_tokens", value)
 	}
