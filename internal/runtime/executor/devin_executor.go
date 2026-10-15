@@ -424,6 +424,11 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	}
 
 	chatModelUID := helps.ResolveDevinChatModelUID(req.Model, thinkingLevel, budgetTokens)
+	if strings.HasPrefix(chatModelUID, "gemini-") || strings.HasPrefix(chatModelUID, "MODEL_GOOGLE_GEMINI_") {
+		for i := range tools {
+			tools[i].Parameters = helps.NormalizeDevinGeminiToolSchema(tools[i].Parameters)
+		}
+	}
 
 	helps.RestoreDevinToolCallIDs(prompts)
 	matcher := e.getSensitiveWordMatcher()
