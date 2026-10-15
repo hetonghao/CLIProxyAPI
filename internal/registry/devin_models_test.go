@@ -325,8 +325,8 @@ func TestDevinSWE16Slow_Issue6111(t *testing.T) {
 func TestWithDevinBuiltins(t *testing.T) {
 	// Test WithDevinBuiltins with nil slice
 	builtins := WithDevinBuiltins(nil)
-	if len(builtins) != 3 {
-		t.Fatalf("expected 3 builtin models, got %d", len(builtins))
+	if len(builtins) != 4 {
+		t.Fatalf("expected 4 builtin models, got %d", len(builtins))
 	}
 	if builtins[0].ID != "devin/swe-1-6-slow" {
 		t.Errorf("expected ID 'devin/swe-1-6-slow', got %q", builtins[0].ID)
@@ -337,8 +337,8 @@ func TestWithDevinBuiltins(t *testing.T) {
 		{ID: "devin/swe-2", DisplayName: "SWE-2"},
 	}
 	merged := WithDevinBuiltins(existing)
-	if len(merged) != 4 {
-		t.Fatalf("expected 4 models, got %d", len(merged))
+	if len(merged) != 5 {
+		t.Fatalf("expected 5 models, got %d", len(merged))
 	}
 
 	// Test WithDevinBuiltins replaces duplicate
@@ -346,8 +346,8 @@ func TestWithDevinBuiltins(t *testing.T) {
 		{ID: "devin/swe-1-6-slow", DisplayName: "Old Display Name"},
 	}
 	replaced := WithDevinBuiltins(duplicate)
-	if len(replaced) != 3 {
-		t.Fatalf("expected 3 models after deduplication, got %d", len(replaced))
+	if len(replaced) != 4 {
+		t.Fatalf("expected 4 models after deduplication, got %d", len(replaced))
 	}
 	if replaced[0].DisplayName != "SWE-1.6 Slow" {
 		t.Errorf("expected DisplayName 'SWE-1.6 Slow', got %q", replaced[0].DisplayName)
@@ -391,6 +391,39 @@ func TestWithDevinBuiltinsAddsGemini4Argon(t *testing.T) {
 		!reflect.DeepEqual(argon.SupportedInputModalities, []string{"text", "image"}) ||
 		argon.Thinking == nil || !reflect.DeepEqual(argon.Thinking.Levels, []string{"low", "medium", "high"}) {
 		t.Fatalf("Gemini 4 Argon metadata differs from the Devin catalog: %+v", argon)
+	}
+}
+
+func TestWithDevinBuiltinsAddsSonnet55(t *testing.T) {
+	var sonnet *ModelInfo
+	for _, model := range WithDevinBuiltins(nil) {
+		if model.ID == "devin/claude-sonnet-5-5" {
+			sonnet = model
+		}
+	}
+	if sonnet == nil {
+		t.Fatal("devin/claude-sonnet-5-5 missing from Devin catalog")
+	}
+	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 64000 ||
+		!reflect.DeepEqual(sonnet.SupportedInputModalities, []string{"text", "image"}) ||
+		sonnet.Thinking == nil || !reflect.DeepEqual(sonnet.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("Sonnet 5.5 metadata differs from the Devin catalog: %+v", sonnet)
+	}
+}
+
+func TestWithDevinBuiltinsPrefersUpstreamSonnet55(t *testing.T) {
+	upstream := &ModelInfo{ID: "devin/claude-sonnet-5-5", DisplayName: "Upstream Sonnet", ContextLength: 2000000}
+	count := 0
+	for _, model := range WithDevinBuiltins([]*ModelInfo{upstream}) {
+		if model.ID == upstream.ID {
+			count++
+			if !reflect.DeepEqual(model, upstream) {
+				t.Fatalf("upstream Sonnet metadata replaced: %+v", model)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("Sonnet 5.5 count = %d, want 1", count)
 	}
 }
 

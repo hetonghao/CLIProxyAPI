@@ -59,7 +59,7 @@ func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 }
 
 // WithDevinBuiltins preserves the SWE-1.6 Slow override and adds missing
-// GPT-6.1 Sol and Gemini 4 Argon definitions without replacing upstream metadata.
+// model definitions without replacing upstream metadata.
 func WithDevinBuiltins(models []*ModelInfo) []*ModelInfo {
 	models = upsertModelInfos(models, devinBuiltinSWE16SlowModelInfo())
 	for _, builtin := range []*ModelInfo{
@@ -92,6 +92,21 @@ func WithDevinBuiltins(models []*ModelInfo) []*ModelInfo {
 			SupportedOutputModalities:  []string{"text"},
 			SupportedGenerationMethods: []string{"generateContent", "countTokens"},
 			Thinking:                   &ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		},
+		{
+			ID:                         "devin/claude-sonnet-5-5",
+			Object:                     "model",
+			Type:                       "devin",
+			OwnedBy:                    "anthropic",
+			DisplayName:                "Claude Sonnet 5.5",
+			ContextLength:              1000000,
+			MaxCompletionTokens:        64000,
+			InputTokenLimit:            1000000,
+			OutputTokenLimit:           64000,
+			SupportedInputModalities:   []string{"text", "image"},
+			SupportedOutputModalities:  []string{"text"},
+			SupportedGenerationMethods: []string{"generateContent", "countTokens"},
+			Thinking:                   &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
 		},
 	} {
 		found := false

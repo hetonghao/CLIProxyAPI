@@ -46,6 +46,23 @@ func TestResolveDevinChatModelUID_Gemini4Argon(t *testing.T) {
 	}
 }
 
+func TestResolveDevinChatModelUID_Sonnet55(t *testing.T) {
+	for _, tt := range []struct{ model, effort, want string }{
+		{"devin/claude-sonnet-5-5", "", "claude-sonnet-5-5-medium"},
+		{"devin/claude-sonnet-5-5", "low", "claude-sonnet-5-5-low"},
+		{"devin/claude-sonnet-5-5", "medium", "claude-sonnet-5-5-medium"},
+		{"devin/claude-sonnet-5-5", "high", "claude-sonnet-5-5-high"},
+		{"devin/claude-sonnet-5-5", "xhigh", "claude-sonnet-5-5-xhigh"},
+		{"devin/claude-sonnet-5-5", "max", "claude-sonnet-5-5-max"},
+		{"devin/claude-sonnet-5-5", "none", "claude-sonnet-5-5-medium"},
+		{"devin/claude-sonnet-5-5(low)", "high", "claude-sonnet-5-5-low"},
+	} {
+		if got := ResolveDevinChatModelUID(tt.model, tt.effort, 0); got != tt.want {
+			t.Errorf("ResolveDevinChatModelUID(%q, %q) = %q, want %q", tt.model, tt.effort, got, tt.want)
+		}
+	}
+}
+
 func TestResolveDevinChatModelUID(t *testing.T) {
 	tests := []struct {
 		name          string
