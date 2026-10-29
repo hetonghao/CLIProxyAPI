@@ -46,6 +46,24 @@ func TestResolveDevinChatModelUID_Gemini4Argon(t *testing.T) {
 	}
 }
 
+func TestResolveDevinChatModelUID_GPT61Terra(t *testing.T) {
+	for _, tt := range []struct{ model, effort, want string }{
+		{"devin/gpt-6-1-terra", "", "gpt-6-1-terra-medium"},
+		{"devin/gpt-6-1-terra", "low", "gpt-6-1-terra-low"},
+		{"devin/gpt-6-1-terra", "medium", "gpt-6-1-terra-medium"},
+		{"devin/gpt-6-1-terra", "high", "gpt-6-1-terra-high"},
+		{"devin/gpt-6-1-terra", "xhigh", "gpt-6-1-terra-xhigh"},
+		{"devin/gpt-6-1-terra", "max", "gpt-6-1-terra-max"},
+		{"devin/gpt-6-1-terra", "none", "gpt-6-1-terra-medium"},
+		{"devin/gpt-6-1-terra(low)", "high", "gpt-6-1-terra-low"},
+		{"gpt-6.1-terra", "high", "gpt-6-1-terra-high"},
+	} {
+		if got := ResolveDevinChatModelUID(tt.model, tt.effort, 0); got != tt.want {
+			t.Errorf("ResolveDevinChatModelUID(%q, %q) = %q, want %q", tt.model, tt.effort, got, tt.want)
+		}
+	}
+}
+
 func TestResolveDevinChatModelUID_Sonnet55(t *testing.T) {
 	for _, tt := range []struct{ model, effort, want string }{
 		{"devin/claude-sonnet-5-5", "", "claude-sonnet-5-5-medium"},

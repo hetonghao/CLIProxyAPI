@@ -18,6 +18,18 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestDevinExecutorGPT61TerraModelUID(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "execute", true: "stream"}[stream], func(t *testing.T) {
+			payload := []byte(`{"model":"devin/gpt-6-1-terra","input":[{"role":"user","content":"OK"}],"reasoning":{"effort":"high"}}`)
+			wire := executeDevinSchemaRequest(t, "devin/gpt-6-1-terra", payload, &config.Config{}, stream)
+			if model := gjson.GetBytes(wire, "model").String(); model != "gpt-6-1-terra-high" {
+				t.Fatalf("upstream model = %q, want gpt-6-1-terra-high", model)
+			}
+		})
+	}
+}
+
 func TestDevinExecutorGeminiEmptyStringEnum(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(map[bool]string{false: "execute", true: "stream"}[stream], func(t *testing.T) {
