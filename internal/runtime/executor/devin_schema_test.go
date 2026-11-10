@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestDevinExecutorGPT61TerraModelUID(t *testing.T) {
@@ -23,7 +23,7 @@ func TestDevinExecutorGPT61TerraModelUID(t *testing.T) {
 		t.Run(map[bool]string{false: "execute", true: "stream"}[stream], func(t *testing.T) {
 			payload := []byte(`{"model":"devin/gpt-6-1-terra","input":[{"role":"user","content":"OK"}],"reasoning":{"effort":"high"}}`)
 			wire := executeDevinSchemaRequest(t, "devin/gpt-6-1-terra", payload, &config.Config{}, stream)
-			if model := gjson.GetBytes(wire, "model").String(); model != "gpt-6-1-terra-high" {
+			if model := ojson.GetBytes(wire, "model").String(); model != "gpt-6-1-terra-high" {
 				t.Fatalf("upstream model = %q, want gpt-6-1-terra-high", model)
 			}
 		})
@@ -35,7 +35,7 @@ func TestDevinExecutorGeminiEmptyStringEnum(t *testing.T) {
 		t.Run(map[bool]string{false: "execute", true: "stream"}[stream], func(t *testing.T) {
 			payload := []byte(`{"input":[{"role":"user","content":"OK"}],"tools":[{"type":"function","name":"task_board_update","parameters":{"type":"object","properties":{"permission":{"type":"string","description":"An empty string restores the session default.","enum":["read-only","workspace-write","danger-full-access",""]}},"required":["permission"]}}]}`)
 			wire := executeDevinSchemaRequest(t, "gemini-4-argon", payload, &config.Config{}, stream)
-			permission := gjson.GetBytes(wire, "tools.0.parameters.properties.permission")
+			permission := ojson.GetBytes(wire, "tools.0.parameters.properties.permission")
 			if permission.Get("enum").Exists() {
 				t.Fatalf("Gemini rejects empty-string enum members: %s", permission.Raw)
 			}
@@ -44,7 +44,7 @@ func TestDevinExecutorGeminiEmptyStringEnum(t *testing.T) {
 					t.Errorf("description must preserve %q: %s", text, permission.Raw)
 				}
 			}
-			if permission.Get("type").String() != "string" || gjson.GetBytes(wire, "tools.0.parameters.required.0").String() != "permission" {
+			if permission.Get("type").String() != "string" || ojson.GetBytes(wire, "tools.0.parameters.required.0").String() != "permission" {
 				t.Fatalf("unrelated schema constraints changed: %s", wire)
 			}
 		})
@@ -58,16 +58,16 @@ func TestDevinExecutorGeminiEnumScopeAndHistory(t *testing.T) {
 			original := bytes.Clone(payload)
 			wire := executeDevinSchemaRequest(t, model, payload, &config.Config{}, false)
 			gemini := strings.Contains(model, "gemini") || strings.Contains(model, "GEMINI")
-			if gjson.GetBytes(wire, "tools.0.parameters.properties.permission.enum").Exists() == gemini {
+			if ojson.GetBytes(wire, "tools.0.parameters.properties.permission.enum").Exists() == gemini {
 				t.Fatalf("empty enum rewrite must be Gemini-only: %s", wire)
 			}
-			if gjson.GetBytes(wire, "tools.0.parameters.properties.status.enum").Raw != `["pending","done"]` {
+			if ojson.GetBytes(wire, "tools.0.parameters.properties.status.enum").Raw != `["pending","done"]` {
 				t.Fatalf("ordinary enum changed: %s", wire)
 			}
 			found := false
-			for _, prompt := range gjson.GetBytes(wire, "prompts").Array() {
+			for _, prompt := range ojson.GetBytes(wire, "prompts").Array() {
 				for _, call := range prompt.Get("tool_calls").Array() {
-					args := gjson.Parse(call.Get("arguments").String())
+					args := ojson.Parse(call.Get("arguments").String())
 					if args.Get("taskId").String() == "t" {
 						found = args.Get("permission").Exists() && args.Get("permission").String() == ""
 					}
@@ -84,7 +84,7 @@ func TestDevinExecutorGeminiNestedEnumsPreserveSchemaData(t *testing.T) {
 	schema := `{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"a.b":{"type":"string","enum":[""]}}}},"choice":{"anyOf":[{"type":"string","enum":["keep",""]},{"type":"null"}]}},"$defs":{"permission":{"type":"string","enum":["read-only",""]}},"additionalProperties":{"type":"string","enum":["extra",""]},"required":["entries"],"default":{"type":"string","enum":["", "literal"],"id":9007199254740993},"examples":[{"enum":["", "example"]}]}`
 	payload := []byte(fmt.Sprintf(`{"input":[{"role":"user","content":"OK"}],"tools":[{"type":"function","name":"f","parameters":%s}]}`, schema))
 	wire := executeDevinSchemaRequest(t, "gemini-4-argon", payload, &config.Config{}, true)
-	parameters := gjson.GetBytes(wire, "tools.0.parameters")
+	parameters := ojson.GetBytes(wire, "tools.0.parameters")
 	for _, path := range []string{`properties.entries.items.properties.a\.b`, "properties.choice.anyOf.0", "$defs.permission", "additionalProperties"} {
 		if parameters.Get(path+".enum").Exists() || !strings.Contains(parameters.Get(path+".description").String(), `""`) {
 			t.Errorf("nested empty enum not preserved as a hint at %s: %s", path, parameters.Raw)
@@ -103,7 +103,7 @@ func TestDevinExecutorGeminiEnumPayloadRulesRemainFinal(t *testing.T) {
 	payload := []byte(`{"input":[{"role":"user","content":"OK"}],"tools":[{"type":"function","name":"f","parameters":{"type":"object","properties":{"permission":{"type":"string","enum":["read-only",""]}}}}]}`)
 	for _, stream := range []bool{false, true} {
 		wire := executeDevinSchemaRequest(t, "gemini-4-argon", payload, cfg, stream)
-		permission := gjson.GetBytes(wire, "tools.0.parameters.properties.permission")
+		permission := ojson.GetBytes(wire, "tools.0.parameters.properties.permission")
 		if permission.Get("enum").Raw != `["override",""]` || permission.Get("description").Exists() {
 			t.Fatalf("built-in compatibility must not undo payload rules: %s", permission.Raw)
 		}
@@ -113,7 +113,7 @@ func TestDevinExecutorGeminiEnumPayloadRulesRemainFinal(t *testing.T) {
 func TestDevinExecutorGeminiPreservesNegativeAndConditionalEnums(t *testing.T) {
 	payload := []byte(`{"input":[{"role":"user","content":"OK"}],"tools":[{"type":"function","name":"f","parameters":{"type":"object","properties":{"permission":{"type":"string","enum":["read-only",""]},"negative":{"type":"string","not":{"type":"string","enum":["forbidden",""]}},"conditional":{"if":{"type":"string","enum":["special",""]},"then":{"maxLength":4},"else":{"minLength":5}},"exclusive":{"oneOf":[{"type":"string","enum":["read",""]},{"type":"string","enum":["write"]}]},"bounded":{"type":"array","contains":{"type":"string","enum":["special",""]},"maxContains":1}}}}]}`)
 	wire := executeDevinSchemaRequest(t, "gemini-4-argon", payload, &config.Config{}, false)
-	parameters := gjson.GetBytes(wire, "tools.0.parameters")
+	parameters := ojson.GetBytes(wire, "tools.0.parameters")
 	for path, want := range map[string]string{
 		"properties.negative.not.enum":          `["forbidden",""]`,
 		"properties.conditional.if.enum":        `["special",""]`,
@@ -143,8 +143,8 @@ func TestDevinExecutorGeminiPreservesReferencedSchemas(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			payload := []byte(fmt.Sprintf(`{"input":[{"role":"user","content":"OK"}],"tools":[{"type":"function","name":"f","parameters":%s}]}`, schema))
 			wire := executeDevinSchemaRequest(t, "gemini-4-argon", payload, &config.Config{}, false)
-			got := gjson.GetBytes(wire, "tools.0.parameters")
-			if !reflect.DeepEqual(got.Value(), gjson.Parse(schema).Value()) {
+			got := ojson.GetBytes(wire, "tools.0.parameters")
+			if !reflect.DeepEqual(got.Value(), ojson.Parse(schema).Value()) {
 				t.Fatalf("shared constraints must remain unchanged: %s", got.Raw)
 			}
 		})

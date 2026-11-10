@@ -8,13 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -66,12 +65,12 @@ func TestDevinExecutorUsageAcrossProtocols(t *testing.T) {
 							payload = []byte(fmt.Sprintf(`{"model":%q,"stream":%t,"input":"hello"}`, sample.model, stream))
 						}
 						if protocol.format == sdktranslator.FormatOpenAI && stream {
-							payload, _ = sjson.SetBytes(payload, "stream_options.include_usage", true)
+							payload, _ = ojson.SetBytes(payload, "stream_options.include_usage", true)
 						}
 						req := cliproxyexecutor.Request{Model: sample.model, Payload: payload}
 						opts := cliproxyexecutor.Options{SourceFormat: protocol.format, OriginalRequest: payload, Stream: stream}
 						exec := NewDevinExecutor(&config.Config{})
-						var actual gjson.Result
+						var actual ojson.Result
 						if stream {
 							response, err := exec.ExecuteStream(context.Background(), auth, req, opts)
 							if err != nil {
@@ -87,7 +86,7 @@ func TestDevinExecutorUsageAcrossProtocols(t *testing.T) {
 									if protocol.format == sdktranslator.FormatOpenAIResponse {
 										path = "response.usage"
 									}
-									if usage := gjson.Get(data, path); usage.IsObject() {
+									if usage := ojson.Get(data, path); usage.IsObject() {
 										actual = usage
 									}
 								}
@@ -97,7 +96,7 @@ func TestDevinExecutorUsageAcrossProtocols(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							actual = gjson.GetBytes(response.Payload, "usage")
+							actual = ojson.GetBytes(response.Payload, "usage")
 						}
 						wantInput := sample.totalInput
 						if protocol.format == sdktranslator.FormatClaude {

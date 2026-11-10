@@ -3,7 +3,7 @@ package helps
 import (
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestNormalizeCodexImageGenerationCompletion_ChangesOnlySuccessfulTerminalImageItems(t *testing.T) {
@@ -70,7 +70,7 @@ func TestNormalizeCodexImageGenerationCompletion_ChangesOnlySuccessfulTerminalIm
 			got := NormalizeCodexImageGenerationCompletion([]byte(tt.event))
 
 			// Then
-			if status := gjson.GetBytes(got, tt.statusPath).String(); status != tt.wantStatus {
+			if status := ojson.GetBytes(got, tt.statusPath).String(); status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q; event=%s", status, tt.wantStatus, got)
 			}
 		})

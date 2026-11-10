@@ -34,11 +34,8 @@ var (
 // ObfuscateExecCommandDescription replaces "returning output or a session ID for ongoing interaction"
 // with "returning output or an session ID for ongoing interaction".
 func ObfuscateExecCommandDescription(desc string) string {
-	if strings.Contains(desc, execCommandObfuscatedPhrase) {
-		return desc
-	}
 	if strings.Contains(desc, execCommandTargetPhrase) {
-		return strings.ReplaceAll(desc, execCommandTargetPhrase, execCommandObfuscatedPhrase)
+		desc = strings.ReplaceAll(desc, execCommandTargetPhrase, execCommandObfuscatedPhrase)
 	}
 	return execCommandRegex.ReplaceAllString(desc, execCommandObfuscatedPhrase)
 }
@@ -46,21 +43,21 @@ func ObfuscateExecCommandDescription(desc string) string {
 // ObfuscateWriteStdinDescription replaces "Writes characters to an existing unified exec session and returns recent output."
 // with "Writes characters to a existing unified exec session and returns recent output.".
 func ObfuscateWriteStdinDescription(desc string) string {
-	if strings.Contains(desc, writeStdinObfuscatedPhrase) {
-		return desc
-	}
 	if strings.Contains(desc, writeStdinTargetPhrase) {
-		return strings.ReplaceAll(desc, writeStdinTargetPhrase, writeStdinObfuscatedPhrase)
+		desc = strings.ReplaceAll(desc, writeStdinTargetPhrase, writeStdinObfuscatedPhrase)
 	}
 	return writeStdinRegex.ReplaceAllString(desc, "Writes characters to a existing unified exec session and returns recent output$1")
 }
 
 // SanitizeDevinToolDescription applies description obfuscation for Devin function tools.
-// Devin upstream rejects these exact phrases wherever they appear, including when
-// Codex code mode embeds nested tool docs inside another tool's description.
-func SanitizeDevinToolDescription(desc string) string {
+// Clients may embed exec_command or write_stdin descriptions inside another tool
+// (such as the Codex code-mode "exec" tool), and Devin rejects those phrases
+// regardless of the tool name.
+func SanitizeDevinToolDescription(_ string, desc string) string {
 	if desc == "" {
 		return desc
 	}
-	return ObfuscateWriteStdinDescription(ObfuscateExecCommandDescription(desc))
+	desc = ObfuscateExecCommandDescription(desc)
+	desc = ObfuscateWriteStdinDescription(desc)
+	return desc
 }

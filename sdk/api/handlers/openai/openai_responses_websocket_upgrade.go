@@ -31,7 +31,9 @@ func upgradeResponsesWebsocket(c *gin.Context) (*websocket.Conn, string, error) 
 	}
 	upgradeHeaders := websocketUpgradeHeaders(c.Request)
 	upgradeHeaders.Set(wsTraceHeader, serverTrace)
-	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, upgradeHeaders)
+	upgrader := responsesWebsocketUpgrader
+	upgrader.EnableCompression = responsesWebsocketCompressionEnabled.Load()
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, upgradeHeaders)
 	if err != nil {
 		return nil, serverTrace, err
 	}

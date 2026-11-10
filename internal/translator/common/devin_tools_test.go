@@ -1,6 +1,7 @@
 package common
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -73,21 +74,48 @@ func TestObfuscateWriteStdinDescription(t *testing.T) {
 }
 
 func TestSanitizeDevinToolDescription(t *testing.T) {
-	// Codex code mode embeds nested tool docs inside the exec tool description.
-	embedded := "Run JavaScript code\n\n### `exec_command`\nRuns a command in a PTY, returning output or a session ID for ongoing interaction.\n\n" +
-		"### `write_stdin`\nWrites characters to an existing unified exec session and returns recent output.\n\nmore docs"
-	want := "Run JavaScript code\n\n### `exec_command`\nRuns a command in a PTY, returning output or an session ID for ongoing interaction.\n\n" +
-		"### `write_stdin`\nWrites characters to a existing unified exec session and returns recent output.\n\nmore docs"
-	got := SanitizeDevinToolDescription(embedded)
-	if got != want {
-		t.Fatalf("SanitizeDevinToolDescription(embedded) = %q, want %q", got, want)
-	}
-	if again := SanitizeDevinToolDescription(got); again != want {
-		t.Fatalf("SanitizeDevinToolDescription() idempotent = %q, want %q", again, want)
+	execDesc := "Runs a command in a bash shell, returning output or a session ID for ongoing interaction."
+	sanitizedExec := SanitizeDevinToolDescription("exec_command", execDesc)
+	if !strings.Contains(sanitizedExec, "an session ID") {
+		t.Errorf("SanitizeDevinToolDescription(exec_command) does not contain 'an session ID': %q", sanitizedExec)
 	}
 
-	unrelated := "Get weather for a city."
-	if got := SanitizeDevinToolDescription(unrelated); got != unrelated {
-		t.Fatalf("SanitizeDevinToolDescription(unrelated) = %q, want %q", got, unrelated)
+	qualifiedExec := SanitizeDevinToolDescription("mcp__codex_app__exec_command", execDesc)
+	if !strings.Contains(qualifiedExec, "an session ID") {
+		t.Errorf("SanitizeDevinToolDescription(mcp__codex_app__exec_command) does not contain 'an session ID': %q", qualifiedExec)
+	}
+
+	stdinDesc := "Writes characters to an existing unified exec session and returns recent output."
+	sanitizedStdin := SanitizeDevinToolDescription("write_stdin", stdinDesc)
+	if !strings.Contains(sanitizedStdin, "to a existing unified exec session") {
+		t.Errorf("SanitizeDevinToolDescription(write_stdin) does not contain 'to a existing unified exec session': %q", sanitizedStdin)
+	}
+
+	codeModeExecDesc := "Run JavaScript code to orchestrate/compose tool calls\n" +
+		"### exec_command\nRuns a command in a PTY, returning output or a session ID for ongoing interaction.\n" +
+		"### write_stdin\nWrites characters to an existing unified exec session and returns recent output.\n"
+	for _, toolName := range []string{"exec", "functions__exec", "other_tool"} {
+		sanitized := SanitizeDevinToolDescription(toolName, codeModeExecDesc)
+		if !strings.Contains(sanitized, "an session ID") {
+			t.Errorf("SanitizeDevinToolDescription(%s) does not contain 'an session ID': %q", toolName, sanitized)
+		}
+		if !strings.Contains(sanitized, "to a existing unified exec session") {
+			t.Errorf("SanitizeDevinToolDescription(%s) does not contain 'to a existing unified exec session': %q", toolName, sanitized)
+		}
+	}
+
+	mixedDesc := "First occurrence: returning output or an session ID for ongoing interaction.\n" +
+		"Second occurrence: returning output or a session ID for ongoing interaction.\n" +
+		"First stdin: Writes characters to a existing unified exec session and returns recent output.\n" +
+		"Second stdin: Writes characters to an existing unified exec session and returns recent output."
+	sanitizedMixed := SanitizeDevinToolDescription("functions__exec", mixedDesc)
+	if strings.Contains(sanitizedMixed, "a session ID") || strings.Contains(sanitizedMixed, "to an existing unified") {
+		t.Errorf("SanitizeDevinToolDescription(functions__exec) left raw phrase in mixed description: %q", sanitizedMixed)
+	}
+
+	unrelatedDesc := "Writes arbitrary input to a process"
+	sanitizedUnrelated := SanitizeDevinToolDescription("other_tool", unrelatedDesc)
+	if sanitizedUnrelated != unrelatedDesc {
+		t.Errorf("SanitizeDevinToolDescription(other_tool) modified unrelated description: %q", sanitizedUnrelated)
 	}
 }

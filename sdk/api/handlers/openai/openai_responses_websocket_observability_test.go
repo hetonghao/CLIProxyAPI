@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -20,7 +21,6 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesWebsocketHandshakeEmitsIndependentServerTrace(t *testing.T) {
@@ -142,7 +142,7 @@ func TestResponsesWebsocketHomeSelectedAuthCallbackPinsAndReusesFirstSelection(t
 		if errRead != nil {
 			t.Fatalf("read websocket response %d: %v", index+1, errRead)
 		}
-		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		if got := ojson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
 			t.Fatalf("response %d type = %q, want %q: %s", index+1, got, wsEventTypeCompleted, payload)
 		}
 		if index == 0 {

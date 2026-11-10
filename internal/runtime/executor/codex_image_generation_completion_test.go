@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexExecutorExecuteStream_CompletesImageGenerationItemsWhenResultPresent(t *testing.T) {
@@ -53,7 +53,7 @@ func TestCodexExecutorExecuteStream_CompletesImageGenerationItemsWhenResultPrese
 			continue
 		}
 		data := bytes.TrimSpace(payload[5:])
-		switch gjson.GetBytes(data, "type").String() {
+		switch ojson.GetBytes(data, "type").String() {
 		case "response.output_item.done":
 			outputItemDone = bytes.Clone(data)
 		case "response.completed":
@@ -62,16 +62,16 @@ func TestCodexExecutorExecuteStream_CompletesImageGenerationItemsWhenResultPrese
 	}
 
 	// Then
-	if got := gjson.GetBytes(outputItemDone, "item.status").String(); got != "completed" {
+	if got := ojson.GetBytes(outputItemDone, "item.status").String(); got != "completed" {
 		t.Fatalf("output_item.done item.status = %q, want completed; event=%s", got, outputItemDone)
 	}
-	if got := gjson.GetBytes(completed, "response.output.0.status").String(); got != "completed" {
+	if got := ojson.GetBytes(completed, "response.output.0.status").String(); got != "completed" {
 		t.Fatalf("response.completed output status = %q, want completed; event=%s", got, completed)
 	}
-	if got := gjson.GetBytes(outputItemDone, "item.result").String(); got != imageResult {
+	if got := ojson.GetBytes(outputItemDone, "item.result").String(); got != imageResult {
 		t.Fatalf("output_item.done item.result = %q, want unchanged result", got)
 	}
-	if got := gjson.GetBytes(completed, "response.output.0.result").String(); got != imageResult {
+	if got := ojson.GetBytes(completed, "response.output.0.result").String(); got != imageResult {
 		t.Fatalf("response.completed output result = %q, want unchanged result", got)
 	}
 }
@@ -105,10 +105,10 @@ func TestCodexExecutorExecute_CompletesCollectedImageGenerationItemWhenFinalOutp
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
-	if got := gjson.GetBytes(response.Payload, "output.0.status").String(); got != "completed" {
+	if got := ojson.GetBytes(response.Payload, "output.0.status").String(); got != "completed" {
 		t.Fatalf("output[0].status = %q, want completed; payload=%s", got, response.Payload)
 	}
-	if got := gjson.GetBytes(response.Payload, "output.0.result").String(); got != imageResult {
+	if got := ojson.GetBytes(response.Payload, "output.0.result").String(); got != imageResult {
 		t.Fatalf("output[0].result = %q, want unchanged result", got)
 	}
 }
