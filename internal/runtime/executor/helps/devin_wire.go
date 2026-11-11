@@ -663,14 +663,20 @@ func SanitizeDevinSystemPrompt(prompt string, matcher *SensitiveWordMatcher) str
 	return res
 }
 
-// devinContentPolicyFingerprintLinePrefixes lists complete instruction lines that
-// Devin's prompt content filter rejects without any further payload signal. They are
-// style/formatting directives copied verbatim from other agent CLIs, so dropping the
-// whole line keeps the request semantics intact.
+// devinContentPolicyFingerprintLinePrefixes lists the leading text of instruction
+// lines that Devin's prompt content filter rejects without any further payload
+// signal. Matching is deliberately prefix-based: the rejected fingerprint is the
+// opening sentence and the trailing explanation on the same line belongs to it, so
+// the whole line is dropped. They are style/formatting directives copied verbatim
+// from other agent CLIs, which keeps the remaining request semantics intact.
+//
+// System-prompt lines are dropped whole, while rejected tool-description phrases are
+// rewritten in place by translatorcommon.SanitizeDevinToolDescription; that separate
+// mechanism lives next to the tool sanitizer and is intentionally not merged here.
 var devinContentPolicyFingerprintLinePrefixes = []string{
-	"- The system will automatically compress prior messages in your conversation as it approaches context limits.",
+	"- The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation",
 	"- Use the Agent tool with specialized agents when the task at hand matches the agent's description.",
-	"- Do not use a colon before tool calls.",
+	"- Do not use a colon before tool calls. Your tool calls may not be shown directly in the output",
 	"## METHOD 2: MARKDOWN CODE BLOCKS - Proposing or Displaying Code NOT already in Codebase",
 	"- Include a short question asking the user if they want to allow the action in `justification` parameter.",
 }
@@ -682,9 +688,16 @@ func isDevinContentPolicyFingerprintLine(trimmed string) bool {
 	if trimmed == "" {
 		return false
 	}
-	for _, prefix := range devinContentPolicyFingerprintLinePrefixes {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
+	// Clients differ in typographic apostrophes, so match both forms.
+	candidates := []string{trimmed}
+	if normalized := strings.ReplaceAll(trimmed, "\u2019", "'"); normalized != trimmed {
+		candidates = append(candidates, normalized)
+	}
+	for _, candidate := range candidates {
+		for _, prefix := range devinContentPolicyFingerprintLinePrefixes {
+			if strings.HasPrefix(candidate, prefix) {
+				return true
+			}
 		}
 	}
 	return false

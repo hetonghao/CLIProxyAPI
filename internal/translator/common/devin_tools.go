@@ -52,6 +52,10 @@ func ObfuscateWriteStdinDescription(desc string) string {
 // Devin rejects tool descriptions that claim unrestricted filesystem access with
 // this exact sentence (for example Trae and Claude Code Read tools). The rewrite
 // keeps the meaning while dropping the rejected phrasing.
+//
+// Rejected system-prompt lines use a different mechanism (whole-line removal in
+// helps.SanitizeDevinSystemPrompt), so tool phrases are listed here next to the
+// tool sanitizer instead of being merged into one table.
 const devinUnrestrictedFileReadPhrase = "You can access any file directly by using this tool."
 
 const devinUnrestrictedFileReadReplacement = "You can access files by path with this tool."

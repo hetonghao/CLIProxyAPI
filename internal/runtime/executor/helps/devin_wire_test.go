@@ -1061,6 +1061,9 @@ func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testin
 		"  - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period.",
 		"## METHOD 2: MARKDOWN CODE BLOCKS - Proposing or Displaying Code NOT already in Codebase",
 		"- Include a short question asking the user if they want to allow the action in `justification` parameter. e.g. \"Do you want to download and install dependencies for this project?\"",
+		// A fingerprint with a different trailing explanation must drop the whole line,
+		// not only the matched prefix.
+		"- Use the Agent tool with specialized agents when the task at hand matches the agent's description. Some extra trailing sentence.",
 	}
 	kept := "Keep this ordinary instruction line."
 	for _, fingerprint := range fingerprints {
@@ -1076,23 +1079,76 @@ func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testin
 }
 
 func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
-	raw := "- Use the Agent tool when the task fits.\n- Do not use a colon before tool calls; end with a period."
-	sanitized := SanitizeDevinSystemPrompt(raw, nil)
-	if !strings.Contains(sanitized, "Use the Agent tool when the task fits.") {
-		t.Errorf("over-matched unrelated Agent line: %q", sanitized)
+	// Each of these shares the opening words of a fingerprint but not the rejected
+	// instruction, so the sanitizer must keep them.
+	kept := []string{
+		"- Use the Agent tool with specialized agents when the task fits.",
+		"- Use the Agent tool when the task fits.",
+		"- Do not use a colon before tool calls; end with a period.",
+		"- Do not use a colon before tool calls. Always end with a period.",
+		"## METHOD 3: INLINE SNIPPETS - Describing code",
+		"- Include a short question asking the user for confirmation.",
 	}
-	if !strings.Contains(sanitized, "Do not use a colon before tool calls; end with a period.") {
-		t.Errorf("over-matched unrelated colon line: %q", sanitized)
+	for _, line := range kept {
+		if got := SanitizeDevinSystemPrompt(line, nil); !strings.Contains(got, line) {
+			t.Errorf("over-matched non-fingerprint line %q -> %q", line, got)
+		}
 	}
 }
 
-func TestSanitizeDevinSystemPrompt_StripsJustificationFingerprintFromCodexBlock(t *testing.T) {
-	raw := "# When to request escalation\n- Provide the `sandbox_permissions` parameter with the value `\"require_escalated`\"\n- Include a short question asking the user if they want to allow the action in `justification` parameter. e.g. \"Do you want to download and install dependencies for this project?\"\n- Optionally suggest a `prefix_rule`.\n"
+func TestSanitizeDevinSystemPrompt_StripsCurlyApostropheFingerprint(t *testing.T) {
+	raw := "- Use the Agent tool with specialized agents when the task at hand matches the agent\u2019s description. Subagents are valuable for parallelizing independent queries."
 	sanitized := SanitizeDevinSystemPrompt(raw, nil)
-	if strings.Contains(sanitized, "Include a short question asking the user if they want to allow the action") {
-		t.Fatalf("justification fingerprint survived sanitization: %q", sanitized)
+	if strings.Contains(sanitized, "specialized agents") {
+		t.Fatalf("curly-apostrophe fingerprint survived sanitization: %q", sanitized)
 	}
-	if !strings.Contains(sanitized, "Provide the `sandbox_permissions` parameter") || !strings.Contains(sanitized, "Optionally suggest a `prefix_rule`") {
-		t.Fatalf("sanitizer removed surrounding instructions: %q", sanitized)
+}
+
+func TestSanitizeDevinSystemPrompt_ReplacementLineSurvivesSecondPass(t *testing.T) {
+	raw := "- Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period."
+	once := SanitizeDevinSystemPrompt(raw, nil)
+	if strings.Contains(once, "Do not use a colon before tool calls.") {
+		t.Fatalf("fingerprint line was not stripped: %q", once)
+	}
+	// The sanitized replacement starts with a different terminator, so a second pass
+	// must keep it instead of progressively deleting user-visible instructions.
+	replacement := "- Do not use a colon before tool calls; end the sentence with a period."
+	if twice := SanitizeDevinSystemPrompt(replacement, nil); twice != replacement {
+		t.Fatalf("second pass altered the replacement line: %q", twice)
+	}
+}
+
+func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolPhrase(t *testing.T) {
+	systemPrompt := "Header line.\n" +
+		"- The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation with the user is not limited by the context window.\n" +
+		"- Include a short question asking the user if they want to allow the action in `justification` parameter. e.g. \"Do you want to install?\"\n" +
+		"Keep this instruction."
+	tools := []DevinTool{{
+		Name: "Read",
+		Description: "Reads a file from the local filesystem. You can access any file directly by using this tool.\n" +
+			"Usage:\n- The file_path parameter must be an absolute path.",
+		Parameters: []byte(`{"type":"object"}`),
+	}}
+
+	reqStr := string(BuildDevinGetChatMessageRequest("token", "seed", "gpt-6-astra", systemPrompt, nil, tools, nil, 1000, "session", "cascade", nil))
+	for _, rejected := range []string{
+		"automatically compress prior messages",
+		"justification` parameter. e.g.",
+		"You can access any file directly by using this tool.",
+	} {
+		if strings.Contains(reqStr, rejected) {
+			t.Errorf("wire request still carries rejected phrase %q", rejected)
+		}
+	}
+	if !strings.Contains(reqStr, "Keep this instruction.") {
+		t.Errorf("wire request lost unrelated system prompt content")
+	}
+	if !strings.Contains(reqStr, "The file_path parameter must be an absolute path.") {
+		t.Errorf("wire request lost unrelated tool description content")
+	}
+
+	logBody := string(BuildDevinUpstreamLogBody(nil, false, "gpt-6-astra", systemPrompt, nil, tools, nil, 1000, "session", "cascade"))
+	if strings.Contains(logBody, "You can access any file directly by using this tool.") {
+		t.Errorf("upstream log body still carries the rejected Read phrase")
 	}
 }
