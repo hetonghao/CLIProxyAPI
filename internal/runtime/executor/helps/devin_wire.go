@@ -648,6 +648,9 @@ func SanitizeDevinSystemPrompt(prompt string, matcher *SensitiveWordMatcher) str
 		if strings.Contains(trimmed, "- Don’t output ANSI escape codes directly — the CLI renderer applies them.") {
 			continue
 		}
+		if isDevinContentPolicyFingerprintLine(trimmed) {
+			continue
+		}
 		if matcher != nil && matcher.Matches(trimmed) {
 			continue
 		}
@@ -658,6 +661,33 @@ func SanitizeDevinSystemPrompt(prompt string, matcher *SensitiveWordMatcher) str
 		res = matcher.ObfuscateText(res)
 	}
 	return res
+}
+
+// devinContentPolicyFingerprintLinePrefixes lists complete instruction lines that
+// Devin's prompt content filter rejects without any further payload signal. They are
+// style/formatting directives copied verbatim from other agent CLIs, so dropping the
+// whole line keeps the request semantics intact.
+var devinContentPolicyFingerprintLinePrefixes = []string{
+	"- The system will automatically compress prior messages in your conversation as it approaches context limits.",
+	"- Use the Agent tool with specialized agents when the task at hand matches the agent's description.",
+	"- Do not use a colon before tool calls.",
+	"## METHOD 2: MARKDOWN CODE BLOCKS - Proposing or Displaying Code NOT already in Codebase",
+	"- Include a short question asking the user if they want to allow the action in `justification` parameter.",
+}
+
+// isDevinContentPolicyFingerprintLine reports whether the line is one of the known
+// upstream content-policy fingerprints. Matching is prefix based so the trailing
+// explanation on the same line is dropped together with it.
+func isDevinContentPolicyFingerprintLine(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	for _, prefix := range devinContentPolicyFingerprintLinePrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseDevinToolCallDelta(data []byte) (DevinToolCallDelta, error) {

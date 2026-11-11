@@ -1053,3 +1053,46 @@ func TestBuildDevinGetChatMessageRequest_ObfuscatesEmbeddedExecDescriptions(t *t
 		}
 	}
 }
+
+func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testing.T) {
+	fingerprints := []string{
+		"  - The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation with the user is not limited by the context window.",
+		"  - Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries.",
+		"  - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period.",
+		"## METHOD 2: MARKDOWN CODE BLOCKS - Proposing or Displaying Code NOT already in Codebase",
+		"- Include a short question asking the user if they want to allow the action in `justification` parameter. e.g. \"Do you want to download and install dependencies for this project?\"",
+	}
+	kept := "Keep this ordinary instruction line."
+	for _, fingerprint := range fingerprints {
+		raw := "Header line\n" + fingerprint + "\n" + kept
+		sanitized := SanitizeDevinSystemPrompt(raw, nil)
+		if strings.Contains(sanitized, strings.TrimSpace(fingerprint)) {
+			t.Errorf("fingerprint line survived sanitization: %q", fingerprint)
+		}
+		if !strings.Contains(sanitized, kept) {
+			t.Errorf("sanitizer removed an unrelated line for fingerprint %q", fingerprint)
+		}
+	}
+}
+
+func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
+	raw := "- Use the Agent tool when the task fits.\n- Do not use a colon before tool calls; end with a period."
+	sanitized := SanitizeDevinSystemPrompt(raw, nil)
+	if !strings.Contains(sanitized, "Use the Agent tool when the task fits.") {
+		t.Errorf("over-matched unrelated Agent line: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "Do not use a colon before tool calls; end with a period.") {
+		t.Errorf("over-matched unrelated colon line: %q", sanitized)
+	}
+}
+
+func TestSanitizeDevinSystemPrompt_StripsJustificationFingerprintFromCodexBlock(t *testing.T) {
+	raw := "# When to request escalation\n- Provide the `sandbox_permissions` parameter with the value `\"require_escalated`\"\n- Include a short question asking the user if they want to allow the action in `justification` parameter. e.g. \"Do you want to download and install dependencies for this project?\"\n- Optionally suggest a `prefix_rule`.\n"
+	sanitized := SanitizeDevinSystemPrompt(raw, nil)
+	if strings.Contains(sanitized, "Include a short question asking the user if they want to allow the action") {
+		t.Fatalf("justification fingerprint survived sanitization: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "Provide the `sandbox_permissions` parameter") || !strings.Contains(sanitized, "Optionally suggest a `prefix_rule`") {
+		t.Fatalf("sanitizer removed surrounding instructions: %q", sanitized)
+	}
+}

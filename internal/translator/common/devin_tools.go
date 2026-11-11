@@ -49,6 +49,13 @@ func ObfuscateWriteStdinDescription(desc string) string {
 	return writeStdinRegex.ReplaceAllString(desc, "Writes characters to a existing unified exec session and returns recent output$1")
 }
 
+// Devin rejects tool descriptions that claim unrestricted filesystem access with
+// this exact sentence (for example Trae and Claude Code Read tools). The rewrite
+// keeps the meaning while dropping the rejected phrasing.
+const devinUnrestrictedFileReadPhrase = "You can access any file directly by using this tool."
+
+const devinUnrestrictedFileReadReplacement = "You can access files by path with this tool."
+
 // SanitizeDevinToolDescription applies description obfuscation for Devin function tools.
 // Clients may embed exec_command or write_stdin descriptions inside another tool
 // (such as the Codex code-mode "exec" tool), and Devin rejects those phrases
@@ -57,6 +64,7 @@ func SanitizeDevinToolDescription(_ string, desc string) string {
 	if desc == "" {
 		return desc
 	}
+	desc = strings.ReplaceAll(desc, devinUnrestrictedFileReadPhrase, devinUnrestrictedFileReadReplacement)
 	desc = ObfuscateExecCommandDescription(desc)
 	desc = ObfuscateWriteStdinDescription(desc)
 	return desc

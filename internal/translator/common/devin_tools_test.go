@@ -119,3 +119,17 @@ func TestSanitizeDevinToolDescription(t *testing.T) {
 		t.Errorf("SanitizeDevinToolDescription(other_tool) modified unrelated description: %q", sanitizedUnrelated)
 	}
 }
+
+func TestSanitizeDevinToolDescription_NeutralizesReadAnyFilePhrase(t *testing.T) {
+	desc := "Reads a file from the local filesystem. You can access any file directly by using this tool.\nUsage:\n- The file_path parameter must be an absolute path."
+	sanitized := SanitizeDevinToolDescription("Read", desc)
+	if strings.Contains(sanitized, "You can access any file directly by using this tool.") {
+		t.Fatalf("Devin-rejected Read phrase survived sanitization: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "You can access files by path with this tool.") {
+		t.Fatalf("expected neutral Read phrase in sanitized description: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "The file_path parameter must be an absolute path.") {
+		t.Fatalf("sanitizer dropped unrelated description content: %q", sanitized)
+	}
+}
