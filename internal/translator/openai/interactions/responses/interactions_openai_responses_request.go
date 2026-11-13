@@ -40,7 +40,7 @@ func convertOpenAIResponsesRequestToInteractions(modelName string, inputRawJSON 
 	forAntigravity := isAntigravityModel(model)
 	forDevin := isDevinModel(model) || !forAntigravity
 	if input := root.Get("input"); input.Exists() {
-		setResponsesInputOnInteractionsDoc(outDoc, input, forAntigravity, &drops)
+		setResponsesInputOnInteractionsDoc(outDoc, input, model, &drops)
 	}
 	appendResponsesToolsToInteractionsDoc(outDoc, root, forAntigravity, forDevin)
 	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
@@ -237,20 +237,20 @@ func interactionsThinkingEffort(root ojson.Result) string {
 	return ""
 }
 
-func setResponsesInputOnInteractionsDoc(outDoc *ojson.Doc, input ojson.Result, forAntigravity bool, drops *translatorcommon.UserTurnDrops) {
+func setResponsesInputOnInteractionsDoc(outDoc *ojson.Doc, input ojson.Result, modelName string, drops *translatorcommon.UserTurnDrops) {
 	functionNamesByCallID := make(map[string]string)
 	items := make([][]byte, 0)
 	if input.Type == ojson.String {
 		items = append(items, interactionsTextStep("user_input", input.String()))
 	} else if input.IsArray() {
 		input.ForEach(func(_, item ojson.Result) bool {
-			if converted := responsesInputItemToInteractions(item, functionNamesByCallID, forAntigravity, drops); converted != nil {
+			if converted := responsesInputItemToInteractions(item, functionNamesByCallID, modelName, drops); converted != nil {
 				items = append(items, converted)
 			}
 			return true
 		})
 	} else if input.IsObject() {
-		if converted := responsesInputItemToInteractions(input, functionNamesByCallID, forAntigravity, drops); converted != nil {
+		if converted := responsesInputItemToInteractions(input, functionNamesByCallID, modelName, drops); converted != nil {
 			items = append(items, converted)
 		}
 	}
@@ -269,7 +269,8 @@ func responsesUserTurnDrops(role string, drops *translatorcommon.UserTurnDrops) 
 	return nil
 }
 
-func responsesInputItemToInteractions(item ojson.Result, functionNamesByCallID map[string]string, forAntigravity bool, drops *translatorcommon.UserTurnDrops) []byte {
+func responsesInputItemToInteractions(item ojson.Result, functionNamesByCallID map[string]string, modelName string, drops *translatorcommon.UserTurnDrops) []byte {
+	forAntigravity := isAntigravityModel(modelName)
 	switch item.Get("type").String() {
 	case "message":
 		stepType := "user_input"
@@ -306,7 +307,7 @@ func responsesInputItemToInteractions(item ojson.Result, functionNamesByCallID m
 	case "function_call_output", "custom_tool_call_output":
 		return responsesFunctionOutputToInteractions(item, functionNamesByCallID, forAntigravity)
 	case "reasoning":
-		return responsesReasoningToInteractions(item)
+		return responsesReasoningToInteractions(item, modelName)
 	case "input_text", "output_text", "text":
 		stepType := "user_input"
 		if item.Get("type").String() == "output_text" {
@@ -548,28 +549,6 @@ func responsesFunctionOutputToInteractions(item ojson.Result, functionNamesByCal
 	}
 	setJSONValueDoc(outDoc, "result", result, `{}`)
 	return outDoc.Bytes()
-}
-
-// responsesReasoningToInteractions carries a Devin-sealed reasoning item back
-// upstream as a thought step so the model keeps its own earlier thinking across
-// tool-call turns. Reasoning items without a Devin signature are left out, as
-// before, because other providers cannot read them.
-func responsesReasoningToInteractions(item ojson.Result) []byte {
-	sig := strings.TrimSpace(item.Get("encrypted_content").String())
-	if !strings.HasPrefix(sig, "sealed.v1.") {
-		return nil
-	}
-	var texts []string
-	item.Get("summary").ForEach(func(_, part ojson.Result) bool {
-		if t := part.Get("text").String(); t != "" {
-			texts = append(texts, t)
-		}
-		return true
-	})
-	stepDoc := ojson.NewDocString(`{"type":"thought","content":[{"type":"text","text":""}],"signature":""}`)
-	_ = stepDoc.Set("content.0.text", strings.Join(texts, "\n\n"))
-	_ = stepDoc.Set("signature", sig)
-	return stepDoc.Bytes()
 }
 
 func interactionsTextStep(stepType, text string) []byte {
