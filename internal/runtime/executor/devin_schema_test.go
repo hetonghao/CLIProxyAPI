@@ -16,6 +16,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func TestDevinExecutorGPT61TerraModelUID(t *testing.T) {
@@ -167,7 +168,7 @@ func executeDevinSchemaRequest(t *testing.T, model string, payload []byte, cfg *
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": {"application/connect+proto"}},
-			Body:       io.NopCloser(bytes.NewReader(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))),
+			Body:       io.NopCloser(bytes.NewReader(devinSchemaCompletionFrames())),
 		}, nil
 	})
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", transport)
@@ -192,4 +193,23 @@ func executeDevinSchemaRequest(t *testing.T, model string, payload []byte, cfg *
 		t.Fatal("no request reached the upstream transport")
 	}
 	return captured
+}
+
+// devinSchemaCompletionFrames builds a minimal but non-empty upstream response:
+// one content frame carrying text plus a usage frame reporting output tokens,
+// then the terminal trailer. A bare end-stream truncates to a zero-token
+// completion, which the executor now classifies as a transport failure.
+func devinSchemaCompletionFrames() []byte {
+	usage := protowire.AppendTag(nil, 2, protowire.VarintType)
+	usage = protowire.AppendVarint(usage, 4)
+	usage = protowire.AppendTag(usage, 3, protowire.VarintType)
+	usage = protowire.AppendVarint(usage, 2)
+
+	frame := protowire.AppendTag(nil, 3, protowire.BytesType)
+	frame = protowire.AppendString(frame, "OK")
+	frame = protowire.AppendTag(frame, 7, protowire.BytesType)
+	frame = protowire.AppendBytes(frame, usage)
+
+	frames := helps.WrapConnectEnvelope(frame)
+	return append(frames, helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`))...)
 }
