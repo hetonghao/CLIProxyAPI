@@ -2,6 +2,7 @@ package helps
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
 	"strings"
 	"testing"
@@ -1078,6 +1079,62 @@ func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testin
 	}
 }
 
+func TestSanitizeDevinSystemPrompt_RewritesReusableFingerprintLines(t *testing.T) {
+	// These fingerprints carry instruction the model still needs, so the sanitizer
+	// must rewrite them in place instead of dropping them: the numbering has to stay
+	// continuous and the rewritten line must survive a second pass unchanged.
+	cases := []struct {
+		name         string
+		input        string
+		wantContains string
+	}{
+		{
+			name:         "identity read",
+			input:        "1. Read `SOUL.md` — this is who you are",
+			wantContains: "1. Read `SOUL.md` — your identity",
+		},
+		{
+			name:         "user read",
+			input:        "2. Read `USER.md` — this is who you're helping",
+			wantContains: "2. Read `USER.md` — information about the user",
+		},
+		{
+			name:         "growth note",
+			input:        "*This file is yours to evolve. As you learn who you are, update it.*",
+			wantContains: "*This file is yours to evolve — update it over time.*",
+		},
+		// Cosmetic variants are still fingerprints and must be rewritten too.
+		{
+			name:         "hyphen separator",
+			input:        "1. Read `SOUL.md` - this is who you are",
+			wantContains: "1. Read `SOUL.md` — your identity",
+		},
+		{
+			name:         "no separator",
+			input:        "1. Read `SOUL.md` this is who you are",
+			wantContains: "1. Read `SOUL.md` — your identity",
+		},
+	}
+	for _, tc := range cases {
+		raw := "Header line\n" + tc.input + "\nKeep this instruction."
+		got := SanitizeDevinSystemPrompt(raw, nil)
+		if !strings.Contains(got, tc.wantContains) {
+			t.Errorf("%s: sanitizer did not rewrite to %q, got %q", tc.name, tc.wantContains, got)
+		}
+		if strings.Contains(got, tc.input) {
+			t.Errorf("%s: original fingerprint survived: %q", tc.name, got)
+		}
+		if !strings.Contains(got, "Keep this instruction.") {
+			t.Errorf("%s: sanitizer removed an unrelated line: %q", tc.name, got)
+		}
+		// A rewritten line must not itself be a fingerprint, or the request would
+		// still be rejected upstream.
+		if again := SanitizeDevinSystemPrompt(got, nil); again != got {
+			t.Errorf("%s: rewrite is not stable across passes: %q -> %q", tc.name, got, again)
+		}
+	}
+}
+
 func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
 	// Each of these shares the opening words of a fingerprint but not the rejected
 	// instruction, so the sanitizer must keep them.
@@ -1088,6 +1145,22 @@ func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
 		"- Do not use a colon before tool calls. Always end with a period.",
 		"## METHOD 3: INLINE SNIPPETS - Describing code",
 		"- Include a short question asking the user for confirmation.",
+		// The upstream filter keys on the numbered identity read itself: without the
+		// number, with another number, or naming another file it accepts the line, so
+		// these must survive sanitization.
+		"Read `SOUL.md` — this is who you are",
+		"1. Read `MEMORY.md` — this is who you are",
+		"9. Read `SOUL.md` — this is who you are",
+		"1. `SOUL.md` — this is who you are",
+		"1. Read `SOUL.md` first.",
+		"3. Use `memory_recall` for recent context (daily notes are on-demand)",
+		"4. If in MAIN SESSION (direct chat): `MEMORY.md` is already injected",
+		// A truncated or reworded growth note is accepted upstream as well.
+		"This file is yours to evolve.",
+		"As you learn who you are, update it.",
+		"This file is yours to evolve — update it over time.",
+		"- **Daily notes:** `memory/YYYY-MM-DD.md` — raw logs (accessed via memory tools)",
+		"- **Long-term:** `MEMORY.md` — curated memories (auto-injected in main session)",
 	}
 	for _, line := range kept {
 		if got := SanitizeDevinSystemPrompt(line, nil); !strings.Contains(got, line) {
@@ -1150,5 +1223,47 @@ func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolP
 	logBody := string(BuildDevinUpstreamLogBody(nil, false, "gpt-6-astra", systemPrompt, nil, tools, nil, 1000, "session", "cascade"))
 	if strings.Contains(logBody, "You can access any file directly by using this tool.") {
 		t.Errorf("upstream log body still carries the rejected Read phrase")
+	}
+}
+
+func TestClampDevinTemperature(t *testing.T) {
+	// The upstream rejects an exact zero with a generic invalid_argument error
+	// while every positive value is accepted, so zero must be nudged above it.
+	cases := []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{"exact zero", 0, DevinMinTemperature},
+		{"negative zero", math.Copysign(0, -1), DevinMinTemperature},
+		{"tiny positive", 0.0001, 0.0001},
+		{"below epsilon", 0.00001, 0.00001},
+		{"default", 1, 1},
+		{"upper bound", 2, 2},
+		// A negative temperature is rejected upstream for a different reason and
+		// must not be silently rewritten.
+		{"negative", -1, -1},
+	}
+	for _, tc := range cases {
+		if got := clampDevinTemperature(tc.in); got != tc.want {
+			t.Errorf("%s: clampDevinTemperature(%v) = %v, want %v", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestBuildDevinGetChatMessageRequest_LiftsZeroTemperature(t *testing.T) {
+	zero := 0.0
+	req := BuildDevinGetChatMessageRequest("token", "seed", "gpt-6-astra", "sys", nil, nil, &zero, 1000, "session", "cascade", nil)
+	// Field 8 carries the completion config; check the temperature slot is not
+	// written as a raw zero float.
+	zeroBits := make([]byte, 8)
+	binary.LittleEndian.PutUint64(zeroBits, math.Float64bits(0))
+	wantBits := make([]byte, 8)
+	binary.LittleEndian.PutUint64(wantBits, math.Float64bits(DevinMinTemperature))
+	if !bytes.Contains(req, wantBits) {
+		t.Errorf("wire request does not carry the lifted temperature %v", DevinMinTemperature)
+	}
+	if bytes.Contains(req, zeroBits) {
+		t.Errorf("wire request still carries a zero temperature")
 	}
 }
