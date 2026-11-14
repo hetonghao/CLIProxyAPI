@@ -9,7 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
-func TestDevinResponsesHistoryPreservesReasoningOnUpstreamSwitch(t *testing.T) {
+func TestDevinResponsesHistoryPreservesNativeStateWithoutUnsignedSummaries(t *testing.T) {
 	envelope := make([]byte, 1+8+16+16+32)
 	envelope[0] = 0x80
 	for i := 9; i < len(envelope); i++ {
@@ -17,14 +17,16 @@ func TestDevinResponsesHistoryPreservesReasoningOnUpstreamSwitch(t *testing.T) {
 	}
 	openaiSignature := base64.URLEncoding.EncodeToString(envelope)
 	for _, tc := range []struct {
-		name, model, signature, content, wantContent, wantThinking, wantSignatureType string
+		name, model, signature, content, wantThinking, wantSignatureType string
 	}{
-		{name: "summary only", model: "gpt-6.1-sol", wantContent: "Previous reasoning summary:\nKeep recovery code J7Q4M9."},
+		{name: "unsigned Sol summary", model: "gpt-6.1-sol"},
+		{name: "unsigned Luna summary", model: "gpt-6-luna"},
 		{name: "native OpenAI reasoning", model: "gpt-6.1-sol", signature: openaiSignature, wantThinking: "Keep recovery code J7Q4M9.", wantSignatureType: "openai"},
 		{name: "native Devin reasoning", model: "swe-2", signature: "sealed.v1.test", wantThinking: "Keep recovery code J7Q4M9.", wantSignatureType: "sealed"},
-		{name: "foreign signature keeps summary", model: "gpt-6.1-sol", signature: "foreign-signature", wantContent: "Previous reasoning summary:\nKeep recovery code J7Q4M9."},
-		{name: "OpenAI signature on another model", model: "swe-2", signature: openaiSignature, wantContent: "Previous reasoning summary:\nKeep recovery code J7Q4M9."},
-		{name: "reasoning text survives", model: "gpt-6.1-sol", content: `[{"type":"reasoning_text","text":"Verify the lookup result."}]`, wantContent: "Previous reasoning summary:\nKeep recovery code J7Q4M9.\n\nVerify the lookup result."},
+		{name: "foreign signature is omitted", model: "gpt-6.1-sol", signature: "foreign-signature"},
+		{name: "OpenAI signature on another model", model: "swe-2", signature: openaiSignature},
+		{name: "unsigned reasoning text is omitted", model: "gpt-6.1-sol", content: `[{"type":"reasoning_text","text":"Verify the lookup result."}]`},
+		{name: "signed reasoning text survives", model: "gpt-6.1-sol", signature: openaiSignature, content: `[{"type":"reasoning_text","text":"Verify the lookup result."}]`, wantThinking: "Keep recovery code J7Q4M9.\n\nVerify the lookup result.", wantSignatureType: "openai"},
 	} {
 		for _, stream := range []bool{false, true} {
 			t.Run(tc.name+map[bool]string{false: "/http", true: "/stream"}[stream], func(t *testing.T) {
@@ -37,7 +39,7 @@ func TestDevinResponsesHistoryPreservesReasoningOnUpstreamSwitch(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				payload := []byte(`{"input":[{"role":"user","content":"Look up the recovery result."},` + item.String() + `,{"type":"function_call","name":"lookup","call_id":"call_lookup","arguments":"{\"query\":\"J7Q4M9\"}"},{"type":"function_call_output","call_id":"call_lookup","output":"verified"},{"type":"custom_tool_call","name":"record","call_id":"call_record","input":"J7Q4M9"},{"type":"custom_tool_call_output","call_id":"call_record","output":"recorded"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}},{"type":"custom","name":"record"}],"reasoning":{"effort":"high"}}`)
+				payload := []byte(`{"input":[{"role":"user","content":"Look up the recovery result."},` + item.String() + `,{"type":"message","role":"assistant","content":"The recovery lookup is ready."},{"type":"function_call","name":"lookup","call_id":"call_lookup","arguments":"{\"query\":\"J7Q4M9\"}"},{"type":"function_call_output","call_id":"call_lookup","output":"verified"},{"type":"custom_tool_call","name":"record","call_id":"call_record","input":"J7Q4M9"},{"type":"custom_tool_call_output","call_id":"call_record","output":"recorded"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}},{"type":"custom","name":"record"}],"reasoning":{"effort":"high"}}`)
 				original := bytes.Clone(payload)
 				wire := executeDevinSchemaRequest(t, tc.model, payload, &config.Config{}, stream)
 				prompts := ojson.GetBytes(wire, "prompts").Array()
@@ -45,7 +47,7 @@ func TestDevinResponsesHistoryPreservesReasoningOnUpstreamSwitch(t *testing.T) {
 					t.Fatalf("got %d prompts, want user and two call/result pairs", len(prompts))
 				}
 				want := map[string]string{
-					"content": tc.wantContent, "thinking": tc.wantThinking, "signature_type": tc.wantSignatureType,
+					"content": "The recovery lookup is ready.", "thinking": tc.wantThinking, "signature_type": tc.wantSignatureType,
 					"tool_calls.0.id": "call_lookup", "tool_calls.0.arguments": `{"query":"J7Q4M9"}`,
 				}
 				for path, value := range want {
