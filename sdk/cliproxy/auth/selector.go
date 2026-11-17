@@ -2,20 +2,20 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"maps"
 	"math"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
@@ -1070,6 +1070,37 @@ func highestPriorityAuths(auths []*Auth) []*Auth {
 	return highest
 }
 
+// selectionCheckpointer lets a selector capture and restore a rotation cursor.
+// Callers use it to discard a speculative pick that was made only to inform a
+// plugin scheduler, so a rejected hint does not shift later rotation.
+type selectionCheckpointer interface {
+	SelectionCheckpoint(provider, model string) func()
+}
+
+// SelectionCheckpoint snapshots the rotation cursor for this provider/model key
+// and returns a function that restores it.
+func (s *RoundRobinSelector) SelectionCheckpoint(provider, model string) func() {
+	if s == nil {
+		return func() {}
+	}
+	key := provider + ":" + canonicalModelLookupKey(model)
+	s.mu.Lock()
+	prior, had := s.lastPicked[key]
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.lastPicked == nil {
+			return
+		}
+		if had {
+			s.lastPicked[key] = prior
+			return
+		}
+		delete(s.lastPicked, key)
+	}
+}
+
 // Pick selects the next available auth for the provider in a round-robin manner.
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
@@ -1308,6 +1339,25 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 			}
 		}
 		return true, blockReasonCooldown, credNext
+	}
+	if !auth.credentialRetryAfter.IsZero() && auth.credentialRetryAfter.After(now) {
+		credNext := auth.credentialRetryAfter
+		if model != "" && len(auth.ModelStates) > 0 {
+			modelKey := canonicalModelLookupKey(model)
+			for stateModel, state := range auth.ModelStates {
+				if state == nil || canonicalModelLookupKey(stateModel) != modelKey {
+					continue
+				}
+				if state.Status == StatusDisabled {
+					return true, blockReasonDisabled, time.Time{}
+				}
+				stateBlocked, _, next := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
+				if stateBlocked && next.After(credNext) {
+					credNext = next
+				}
+			}
+		}
+		return true, blockReasonOther, credNext
 	}
 	unavailable := codexRefreshUnavailableForRequest(ctx, auth, now, clientHeaders...)
 	if model != "" {
