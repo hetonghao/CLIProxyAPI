@@ -1332,27 +1332,6 @@ func mergeTriedAuthIDs(tried map[string]struct{}, excluded map[string]struct{}) 
 	return merged
 }
 
-// selectionCheckpointFor captures a selector rotation cursor when the selector
-// supports it, returning a no-op restore otherwise.
-func selectionCheckpointFor(selector Selector, provider, model string) func() {
-	checkpointer, ok := selector.(selectionCheckpointer)
-	if !ok {
-		return func() {}
-	}
-	return checkpointer.SelectionCheckpoint(provider, model)
-}
-
-// excludedAuthID reports whether id is present in the scheduler exclusion set.
-// Callers use it to decide whether a preference computed before filtering is
-// still usable without running the selector a second time.
-func excludedAuthID(id string, excluded map[string]struct{}) bool {
-	if id == "" || len(excluded) == 0 {
-		return false
-	}
-	_, skip := excluded[id]
-	return skip
-}
-
 func filterAuthsExcluding(auths []*Auth, excluded map[string]struct{}) []*Auth {
 	if len(auths) == 0 || len(excluded) == 0 {
 		return auths
@@ -2423,16 +2402,16 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	var preferred *Auth
 	var errPreferred error
 	selectorRan := false
-	restoreSelection := func() {}
+	reservation := &selectorReservation{}
+	defer reservation.finish(false)
 	if pluginScheduler != nil && selector != nil {
 		selectorRan = true
-		restoreSelection = selectionCheckpointFor(selector, provider, model)
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		if accountingAuths != nil {
 			selectorCtx = context.WithValue(selectorCtx, weightedAccountingPoolKey{}, accountingAuths)
 		}
-		preferred, errPreferred = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		preferred, errPreferred = selector.Pick(context.WithValue(selectorCtx, selectorReservationKey{}, reservation), provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 	}
 	preferredAuthID := ""
 	if preferred != nil {
@@ -2472,15 +2451,12 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			}
 			transientAuthIDs = m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
 			m.mu.RUnlock()
-			// The excluded set shrank the candidate pool. Reuse the previous pick
-			// unless it was excluded itself: running the selector again would
-			// advance order-sensitive selectors (round-robin) a second time.
-			if selectorRan && excludedAuthID(preferredAuthID, excluded) {
-				restoreSelection()
-				preferred, errPreferred = nil, nil
-				preferredAuthID = ""
-				selectorRan = false
-			}
+			// Exclusions change the accounting pool even when the hint remains
+			// eligible. Release its reservation and select once from the new pool.
+			reservation.finish(false)
+			preferred, errPreferred = nil, nil
+			preferredAuthID = ""
+			selectorRan = false
 		}
 		if selectorRan {
 			selected, errPick = preferred, errPreferred
@@ -2510,6 +2486,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	// A plugin may temporarily spill to another account when the preferred
+	// account is rate limited. Keep the host preference and binding, as before,
+	// so the next request can return to it after the rate window resets.
+	reservation.finish(len(excluded) == 0)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2978,11 +2958,11 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	var preferred *Auth
 	var errPreferred error
 	selectorRan := false
-	restoreSelection := func() {}
+	reservation := &selectorReservation{}
+	defer reservation.finish(false)
 	if pluginScheduler != nil && selector != nil {
 		selectorRan = true
-		restoreSelection = selectionCheckpointFor(selector, "mixed", model)
-		preferred, errPreferred = selector.Pick(buildMixedSelectorCtx(), "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+		preferred, errPreferred = selector.Pick(context.WithValue(buildMixedSelectorCtx(), selectorReservationKey{}, reservation), "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
 	}
 	preferredAuthID := ""
 	if preferred != nil {
@@ -3023,15 +3003,12 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			}
 			transientAuthIDs = m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
 			m.mu.RUnlock()
-			// The excluded set shrank the candidate pool. Reuse the previous pick
-			// unless it was excluded itself: running the selector again would
-			// advance order-sensitive selectors (round-robin) a second time.
-			if selectorRan && excludedAuthID(preferredAuthID, excluded) {
-				restoreSelection()
-				preferred, errPreferred = nil, nil
-				preferredAuthID = ""
-				selectorRan = false
-			}
+			// Exclusions change the accounting pool even when the hint remains
+			// eligible. Release its reservation and select once from the new pool.
+			reservation.finish(false)
+			preferred, errPreferred = nil, nil
+			preferredAuthID = ""
+			selectorRan = false
 		}
 		if selectorRan {
 			selected, errPick = preferred, errPreferred
@@ -3061,6 +3038,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
+	// A plugin may temporarily spill to another account when the preferred
+	// account is rate limited. Keep the host preference and binding, as before,
+	// so the next request can return to it after the rate window resets.
+	reservation.finish(len(excluded) == 0)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()

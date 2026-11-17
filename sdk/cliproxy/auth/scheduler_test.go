@@ -1089,6 +1089,203 @@ func TestManagerPluginSchedulerDefaultHighestPriorityOnly(t *testing.T) {
 	}
 }
 
+func TestManagerPluginSchedulerExcludedHintPreservesLaterCompletedPick(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"a", "b", "c"} {
+		if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	scheduler := &fakePluginScheduler{}
+	scheduler.pick = func(ctx context.Context, _ pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
+		if scheduler.calls == 1 {
+			later, errLater := manager.SelectAuth(ctx, "gemini", "", cliproxyexecutor.Options{})
+			if errLater != nil {
+				t.Fatal(errLater)
+			}
+			if later.ID != "b" {
+				t.Fatalf("later request = %s, want b", later.ID)
+			}
+			return pluginapi.SchedulerPickResponse{ExcludeCandidates: []string{"a"}}, false, nil
+		}
+		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+	manager.SetPluginScheduler(scheduler)
+	got, errPick := manager.SelectAuth(context.Background(), "gemini", "", cliproxyexecutor.Options{})
+	if errPick != nil {
+		t.Fatal(errPick)
+	}
+	if got.ID != "c" {
+		t.Fatalf("after later request completed b, resumed request picked %s, want c", got.ID)
+	}
+}
+
+func TestManagerPluginSchedulerExcludedWeightedHintDoesNotChargeFullPool(t *testing.T) {
+	manager := NewManager(nil, &WeightedRoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"a", "b", "c"} {
+		if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	manager.SetPluginScheduler(&fakePluginScheduler{resp: pluginapi.SchedulerPickResponse{ExcludeCandidates: []string{"a"}}})
+	first, _, errPick := manager.pickNextLegacy(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatal(errPick)
+	}
+	if first.ID != "b" {
+		t.Fatalf("first pick = %s, want b", first.ID)
+	}
+	manager.SetPluginScheduler(nil)
+	got, _, errNext := manager.pickNextLegacy(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	if errNext != nil {
+		t.Fatal(errNext)
+	}
+	if got.ID != "a" {
+		t.Fatalf("first actual full-pool selection = %s, want a; excluded hint already consumed credit", got.ID)
+	}
+}
+
+func TestManagerPluginSchedulerExcludedHintPreservesModelRotation(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	registerSchedulerModels(t, "gemini", "test-model", "a", "b", "c")
+	for _, candidate := range []*Auth{
+		{ID: "a", Provider: "gemini", Attributes: map[string]string{"priority": "100"}},
+		{ID: "b", Provider: "gemini", Attributes: map[string]string{"priority": "50"}},
+		{ID: "c", Provider: "gemini", Attributes: map[string]string{"priority": "50"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	if _, errPick := manager.SelectAuthExcluding(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{}, map[string]struct{}{"a": {}, "c": {}}); errPick != nil {
+		t.Fatal(errPick)
+	}
+	manager.SetPluginScheduler(&fakePluginScheduler{acrossPriorities: true, resp: pluginapi.SchedulerPickResponse{ExcludeCandidates: []string{"a"}}})
+	got, errPick := manager.SelectAuth(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{})
+	if errPick != nil {
+		t.Fatal(errPick)
+	}
+	if got.ID != "c" {
+		t.Fatalf("model-scoped selection = %s, want c after prior b", got.ID)
+	}
+}
+
+func TestManagerPluginSchedulerRetainedHintChargesOnlyFilteredPool(t *testing.T) {
+	manager := NewManager(nil, &WeightedRoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"a", "b", "c"} {
+		if _, errRegister := manager.Register(t.Context(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	manager.SetPluginScheduler(&fakePluginScheduler{resp: pluginapi.SchedulerPickResponse{ExcludeCandidates: []string{"c"}}})
+	first, errPick := manager.SelectAuth(t.Context(), "gemini", "", cliproxyexecutor.Options{})
+	if errPick != nil || first == nil || first.ID != "a" {
+		t.Fatalf("filtered-pool pick = %v, %v; want a", first, errPick)
+	}
+	manager.SetPluginScheduler(nil)
+	next, errNext := manager.SelectAuth(t.Context(), "gemini", "", cliproxyexecutor.Options{})
+	if errNext != nil || next == nil || next.ID != "a" {
+		t.Fatalf("first full-pool pick = %v, %v; excluded c must not accrue credit", next, errNext)
+	}
+}
+
+func TestManagerPluginSchedulerOverflowPreservesHostAffinity(t *testing.T) {
+	// The rate limiter temporarily spills a sticky request when its preferred
+	// account is full. Keep that preference so traffic returns after the reset.
+	affinity := NewSessionAffinitySelector(&WeightedRoundRobinSelector{})
+	t.Cleanup(affinity.Stop)
+	manager := NewManager(nil, affinity, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	for _, id := range []string{"a", "b"} {
+		if _, errRegister := manager.Register(t.Context(), &Auth{ID: id, Provider: "gemini"}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	var hints []string
+	scheduler := &fakePluginScheduler{pick: func(_ context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
+		hint, _ := req.Options.Metadata[cliproxyexecutor.SchedulerPreferredAuthMetadataKey].(string)
+		hints = append(hints, hint)
+		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: "b"}, true, nil
+	}}
+	manager.SetPluginScheduler(scheduler)
+	for range 2 {
+		got, errPick := manager.SelectAuth(t.Context(), "gemini", "", cliproxyexecutor.Options{Headers: http.Header{"Session-Id": []string{"overflow-session"}}})
+		if errPick != nil || got == nil || got.ID != "b" {
+			t.Fatalf("plugin overflow = %v, %v; want b", got, errPick)
+		}
+	}
+	if len(hints) != 2 || hints[0] != "a" || hints[1] != "a" {
+		t.Fatalf("overflow rebound the host affinity: hints=%v, want [a a]", hints)
+	}
+	manager.SetPluginScheduler(nil)
+	got, errPick := manager.SelectAuth(t.Context(), "gemini", "", cliproxyexecutor.Options{Headers: http.Header{"Session-Id": []string{"overflow-session"}}})
+	if errPick != nil || got == nil || got.ID != "a" {
+		t.Fatalf("post-reset preference = %v, %v; want a", got, errPick)
+	}
+}
+
+func TestRoundRobinReservationReleaseOrderPreservesCommittedCursor(t *testing.T) {
+	for _, firstCommits := range []bool{false, true} {
+		for _, secondCommits := range []bool{false, true} {
+			for _, secondFinishesFirst := range []bool{false, true} {
+				s := &RoundRobinSelector{}
+				auths := []*Auth{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+				first, second := &selectorReservation{}, &selectorReservation{}
+				for _, reservation := range []*selectorReservation{first, second} {
+					if _, errPick := s.Pick(context.WithValue(t.Context(), selectorReservationKey{}, reservation), "gemini", "", cliproxyexecutor.Options{}, auths); errPick != nil {
+						t.Fatal(errPick)
+					}
+				}
+				if secondFinishesFirst {
+					second.finish(secondCommits)
+					first.finish(firstCommits)
+				} else {
+					first.finish(firstCommits)
+					second.finish(secondCommits)
+				}
+				want := "a"
+				if secondCommits {
+					want = "c"
+				} else if firstCommits {
+					want = "b"
+				}
+				got, errPick := s.Pick(t.Context(), "gemini", "", cliproxyexecutor.Options{}, auths)
+				if errPick != nil || got.ID != want {
+					t.Fatalf("first=%t second=%t reverse=%t: got %v/%v, want %s", firstCommits, secondCommits, secondFinishesFirst, got, errPick, want)
+				}
+			}
+		}
+	}
+	// Retention is bounded by the active reservations, not the number of
+	// already-rejected requests that once overlapped them.
+	s := &RoundRobinSelector{}
+	auths := []*Auth{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	reserve := func() *selectorReservation {
+		r := &selectorReservation{}
+		if _, errPick := s.Pick(context.WithValue(t.Context(), selectorReservationKey{}, r), "gemini", "", cliproxyexecutor.Options{}, auths); errPick != nil {
+			t.Fatal(errPick)
+		}
+		return r
+	}
+	older := reserve()
+	for range 32 {
+		newer := reserve()
+		older.finish(false)
+		older = newer
+	}
+	if pending := s.pending["gemini:"]; pending == nil || pending.previous != nil {
+		t.Fatal("finished rollbacks remained retained behind one active request")
+	}
+	older.finish(false)
+	if len(s.pending) != 0 {
+		t.Fatal("completed requests leaked round-robin reservations")
+	}
+}
+
 func TestManagerPluginSchedulerReceivesSelectorPreferredAuth(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["gemini"] = schedulerTestExecutor{}

@@ -35,6 +35,7 @@ import (
 type RoundRobinSelector struct {
 	mu         sync.Mutex
 	lastPicked map[string]string
+	pending    map[string]*roundRobinReservation
 	maxKeys    int
 }
 
@@ -1070,35 +1071,91 @@ func highestPriorityAuths(auths []*Auth) []*Auth {
 	return highest
 }
 
-// selectionCheckpointer lets a selector capture and restore a rotation cursor.
-// Callers use it to discard a speculative pick that was made only to inform a
-// plugin scheduler, so a rejected hint does not shift later rotation.
-type selectionCheckpointer interface {
-	SelectionCheckpoint(provider, model string) func()
+type selectorReservationKey struct{}
+
+// selectorReservation defers accounting and bindings until a scheduler accepts the hint.
+type selectorReservation struct {
+	pending []func(bool)
 }
 
-// SelectionCheckpoint snapshots the rotation cursor for this provider/model key
-// and returns a function that restores it.
-func (s *RoundRobinSelector) SelectionCheckpoint(provider, model string) func() {
-	if s == nil {
-		return func() {}
+func (r *selectorReservation) finish(committed bool) {
+	if r == nil {
+		return
 	}
-	key := provider + ":" + canonicalModelLookupKey(model)
+	for _, finish := range r.pending {
+		finish(committed)
+	}
+	r.pending = nil
+}
+
+func finishSelectorReservation(ctx context.Context, committed bool, finish func(bool)) {
+	if ctx != nil && committed {
+		if reservation, ok := ctx.Value(selectorReservationKey{}).(*selectorReservation); ok {
+			reservation.pending = append(reservation.pending, finish)
+			return
+		}
+	}
+	finish(committed)
+}
+
+func commitSelectorBinding(ctx context.Context, bind func()) {
+	finishSelectorReservation(ctx, true, func(committed bool) {
+		if committed {
+			bind()
+		}
+	})
+}
+
+type roundRobinReservation struct {
+	selector             *RoundRobinSelector
+	key, prior, selected string
+	previous, next       *roundRobinReservation
+	finished, committed  bool
+}
+
+func (r *roundRobinReservation) finish(committed bool) {
+	s := r.selector
 	s.mu.Lock()
-	prior, had := s.lastPicked[key]
-	s.mu.Unlock()
-	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.lastPicked == nil {
-			return
-		}
-		if had {
-			s.lastPicked[key] = prior
-			return
-		}
-		delete(s.lastPicked, key)
+	defer s.mu.Unlock()
+	if r.finished {
+		return
 	}
+	r.finished, r.committed = true, committed
+	if committed {
+		// A completed later pick is a barrier: older rollbacks cannot undo it.
+		if r.previous != nil {
+			r.previous.next = nil
+		}
+		r.previous = nil
+	}
+	if s.pending[r.key] != r {
+		if !committed && r.next != nil {
+			// Unlink completed rollbacks immediately; retain only in-flight picks
+			// and the most recent committed barrier, not the whole request history.
+			r.next.previous = r.previous
+			r.next.prior = r.prior
+			if r.previous != nil {
+				r.previous.next = r.next
+			}
+		}
+		return
+	}
+	if committed {
+		delete(s.pending, r.key)
+		return
+	}
+	s.lastPicked[r.key] = r.prior
+	previous := r.previous
+	if previous == nil || previous.finished {
+		if previous != nil {
+			s.lastPicked[r.key] = previous.selected
+			previous.next = nil
+		}
+		delete(s.pending, r.key)
+		return
+	}
+	previous.next = nil
+	s.pending[r.key] = previous
 }
 
 // Pick selects the next available auth for the provider in a round-robin manner.
@@ -1112,7 +1169,6 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	key := provider + ":" + canonicalModelLookupKey(model)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.lastPicked == nil {
 		s.lastPicked = make(map[string]string)
 	}
@@ -1123,7 +1179,28 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 
 	s.ensureRotationKey(key, limit)
 	picked := available[successorIndex(available, s.lastPicked[key])]
+	var reservation *roundRobinReservation
+	if ctx != nil {
+		if _, speculative := ctx.Value(selectorReservationKey{}).(*selectorReservation); speculative {
+			reservation = &roundRobinReservation{selector: s, key: key, prior: s.lastPicked[key], selected: picked.ID, previous: s.pending[key]}
+			if reservation.previous != nil {
+				reservation.previous.next = reservation
+			}
+			if s.pending == nil {
+				s.pending = make(map[string]*roundRobinReservation)
+			}
+			s.pending[key] = reservation
+		}
+	}
+	if reservation == nil {
+		// A normal pick commits immediately; an older rejected hint cannot undo it.
+		delete(s.pending, key)
+	}
 	s.lastPicked[key] = picked.ID
+	s.mu.Unlock()
+	if reservation != nil {
+		finishSelectorReservation(ctx, true, reservation.finish)
+	}
 	return picked, nil
 }
 
@@ -1147,6 +1224,7 @@ func successorIndex(available []*Auth, lastID string) int {
 func (s *RoundRobinSelector) ensureRotationKey(key string, limit int) {
 	if _, ok := s.lastPicked[key]; !ok && len(s.lastPicked) >= limit {
 		s.lastPicked = make(map[string]string)
+		s.pending = nil
 	}
 }
 
@@ -1166,7 +1244,7 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 	if errPick != nil {
 		return nil, errPick
 	}
-	reservation.finish(true)
+	finishSelectorReservation(ctx, true, reservation.finish)
 	return picked, nil
 }
 
@@ -1662,7 +1740,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 	var reservation *weightedReservation
 	// Local bindings complete inside Pick; failed selections release speculative credit.
-	defer func() { reservation.finish(selected != nil && errPick == nil) }()
+	defer func() { finishSelectorReservation(ctx, selected != nil && errPick == nil, reservation.finish) }()
 	entry := selectorLogEntry(ctx)
 	if opts.Metadata == nil {
 		opts.Metadata = make(map[string]any)
@@ -1741,27 +1819,29 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
 	bind := func(authID string, recordSelection bool) {
-		keys := []string{cacheKey}
-		if fallbackKey != "" && !isSubagent && !isFork {
-			keys = append(keys, fallbackKey)
-		}
-		if !recordSelection {
-			s.cache.SetAliases(authID, keys...)
-			return
-		}
-		bindingProvider := canonicalSchedulingProvider(provider)
-		for _, candidate := range auths {
-			if candidate != nil && candidate.ID == authID {
-				if candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate)); candidateProvider != "" {
-					bindingProvider = candidateProvider
-				}
-				break
+		commitSelectorBinding(ctx, func() {
+			keys := []string{cacheKey}
+			if fallbackKey != "" && !isSubagent && !isFork {
+				keys = append(keys, fallbackKey)
 			}
-		}
-		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
+			if !recordSelection {
+				s.cache.SetAliases(authID, keys...)
+				return
+			}
+			bindingProvider := canonicalSchedulingProvider(provider)
+			for _, candidate := range auths {
+				if candidate != nil && candidate.ID == authID {
+					if candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate)); candidateProvider != "" {
+						bindingProvider = candidateProvider
+					}
+					break
+				}
+			}
+			s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
+		})
 	}
 
-	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
+	if cachedAuthID, ok := s.cache.Get(cacheKey); ok {
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
 				bind(auth.ID, true)
@@ -1951,29 +2031,31 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 			return picked, true, errPick
 		}
 		if !match.IsFork && s.rebindOnNever {
-			if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, match.AuthID); bindRes.SessionID != "" {
-				opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
-				opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
-				if bindRes.ParentSessionID != "" {
-					opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = bindRes.ParentSessionID
-				} else if opts.Metadata != nil {
-					delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
-				}
-				if bindRes.AccessNumber > 0 && opts.Metadata != nil {
-					opts.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey] = bindRes.AccessNumber
-				}
-				if bindRes.IsCompaction {
-					if opts.Metadata != nil {
-						opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
-						delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
-						opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
+			commitSelectorBinding(ctx, func() {
+				if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, match.AuthID); bindRes.SessionID != "" {
+					opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
+					opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
+					if bindRes.ParentSessionID != "" {
+						opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = bindRes.ParentSessionID
+					} else if opts.Metadata != nil {
+						delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
 					}
-				} else if opts.Metadata != nil {
-					delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
-					delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
-					delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+					if bindRes.AccessNumber > 0 && opts.Metadata != nil {
+						opts.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey] = bindRes.AccessNumber
+					}
+					if bindRes.IsCompaction {
+						if opts.Metadata != nil {
+							opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
+							delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+							opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
+						}
+					} else if opts.Metadata != nil {
+						delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+						delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
+						delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+					}
 				}
-			}
+			})
 			errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, match.AuthID, now)
 			entry.Infof("session-affinity: LCP cache hit but bound auth unavailable, refusing failover | session=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(match.SessionID), match.AuthID, errBound.Code, provider, model)
 			return nil, true, errBound
@@ -1998,53 +2080,55 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if preservedAuthID != "" {
 		bindAuthID = preservedAuthID
 	}
-	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
-		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
-		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
-		if bindRes.ParentSessionID != "" {
-			opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = bindRes.ParentSessionID
-		} else if opts.Metadata != nil {
-			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
-		}
-		if bindRes.AccessNumber > 0 && opts.Metadata != nil {
-			opts.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey] = bindRes.AccessNumber
-		}
-		if preservedAuthID != "" {
-			if bindRes.IsCompaction {
+	commitSelectorBinding(ctx, func() {
+		if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
+			opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
+			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
+			if bindRes.ParentSessionID != "" {
+				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = bindRes.ParentSessionID
+			} else if opts.Metadata != nil {
+				delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+			}
+			if bindRes.AccessNumber > 0 && opts.Metadata != nil {
+				opts.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey] = bindRes.AccessNumber
+			}
+			if preservedAuthID != "" {
+				if bindRes.IsCompaction {
+					if opts.Metadata != nil {
+						opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
+						delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+						opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
+					}
+				} else if opts.Metadata != nil {
+					delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+					delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
+					delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+				}
+				entry.Infof("session-affinity: LCP cache hit but auth transiently unavailable, failover without rebinding | session=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), preservedAuthID, auth.ID, provider, model)
+			} else if bindRes.IsFork {
+				if opts.Metadata != nil {
+					opts.Metadata[cliproxyexecutor.IsForkMetadataKey] = true
+					delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
+					opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "fork"
+				}
+				entry.Infof("session-affinity: LCP fork bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), truncateSessionID(bindRes.ParentSessionID), auth.ID, provider, model)
+			} else if bindRes.IsCompaction {
 				if opts.Metadata != nil {
 					opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
 					delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
 					opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
 				}
-			} else if opts.Metadata != nil {
-				delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
-				delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
-				delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+				entry.Infof("session-affinity: LCP compaction bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), truncateSessionID(bindRes.ParentSessionID), auth.ID, provider, model)
+			} else {
+				if opts.Metadata != nil {
+					delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+					delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
+					delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+				}
+				entry.Infof("session-affinity: LCP cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), auth.ID, provider, model)
 			}
-			entry.Infof("session-affinity: LCP cache hit but auth transiently unavailable, failover without rebinding | session=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), preservedAuthID, auth.ID, provider, model)
-		} else if bindRes.IsFork {
-			if opts.Metadata != nil {
-				opts.Metadata[cliproxyexecutor.IsForkMetadataKey] = true
-				delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
-				opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "fork"
-			}
-			entry.Infof("session-affinity: LCP fork bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), truncateSessionID(bindRes.ParentSessionID), auth.ID, provider, model)
-		} else if bindRes.IsCompaction {
-			if opts.Metadata != nil {
-				opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
-				delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
-				opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
-			}
-			entry.Infof("session-affinity: LCP compaction bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), truncateSessionID(bindRes.ParentSessionID), auth.ID, provider, model)
-		} else {
-			if opts.Metadata != nil {
-				delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
-				delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
-				delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
-			}
-			entry.Infof("session-affinity: LCP cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), auth.ID, provider, model)
 		}
-	}
+	})
 	return auth, true, nil
 }
 
