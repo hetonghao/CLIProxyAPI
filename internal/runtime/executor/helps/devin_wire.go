@@ -656,13 +656,6 @@ func SanitizeDevinSystemPrompt(prompt string, matcher *SensitiveWordMatcher) str
 		if strings.Contains(trimmed, "- Don’t output ANSI escape codes directly — the CLI renderer applies them.") {
 			continue
 		}
-		if replacement, ok := rewriteDevinContentPolicyFingerprintLine(trimmed); ok {
-			kept = append(kept, replacement)
-			continue
-		}
-		if isDevinContentPolicyFingerprintLine(trimmed) {
-			continue
-		}
 		kept = append(kept, line)
 	}
 	res := strings.Join(kept, "\n")
@@ -670,97 +663,6 @@ func SanitizeDevinSystemPrompt(prompt string, matcher *SensitiveWordMatcher) str
 		return matcher.SanitizeDevinText(res)
 	}
 	return strings.TrimSpace(res)
-}
-
-// devinContentPolicyFingerprintReplacements rewrites fingerprint lines that carry
-// instruction the model still needs, so the request keeps its original meaning
-// instead of losing the line. Each entry matches the rejected opening sentence and
-// substitutes wording that the upstream filter accepts.
-//
-// Entries are ordered: the first matching prefix wins.
-var devinContentPolicyFingerprintReplacements = []struct {
-	prefix      string
-	replacement string
-}{
-	// zeroclaw-style personal-assistant scaffolds number an identity-reading list
-	// and close with an italic growth note. The upstream rejects those exact
-	// sentences but accepts the same instruction phrased differently, so the
-	// numbering and the semantics survive while the fingerprint does not.
-	{
-		prefix:      "1. Read `SOUL.md` — this is who you are",
-		replacement: "1. Read `SOUL.md` — your identity",
-	},
-	{
-		prefix:      "2. Read `USER.md` — this is who you're helping",
-		replacement: "2. Read `USER.md` — information about the user",
-	},
-	{
-		prefix:      "*This file is yours to evolve. As you learn who you are, update it.*",
-		replacement: "*This file is yours to evolve — update it over time.*",
-	},
-}
-
-// devinContentPolicyFingerprintLinePrefixes lists the leading text of instruction
-// lines that Devin's prompt content filter rejects without any further payload
-// signal. Matching is deliberately prefix-based: the rejected fingerprint is the
-// opening sentence and the trailing explanation on the same line belongs to it, so
-// the whole line is dropped. They are style/formatting directives copied verbatim
-// from other agent CLIs, which keeps the remaining request semantics intact.
-//
-// System-prompt lines are dropped whole, while rejected tool-description phrases are
-// rewritten in place by translatorcommon.SanitizeDevinToolDescription; that separate
-// mechanism lives next to the tool sanitizer and is intentionally not merged here.
-var devinContentPolicyFingerprintLinePrefixes = []string{
-	"- The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation",
-	"- Use the Agent tool with specialized agents when the task at hand matches the agent's description.",
-	"- Do not use a colon before tool calls. Your tool calls may not be shown directly in the output",
-	"## METHOD 2: MARKDOWN CODE BLOCKS - Proposing or Displaying Code NOT already in Codebase",
-	"- Include a short question asking the user if they want to allow the action in `justification` parameter.",
-}
-
-// rewriteDevinContentPolicyFingerprintLine returns the neutral replacement for a
-// fingerprint line that must keep its instruction, and ok=false when the line has
-// no replacement and should be dropped instead.
-func rewriteDevinContentPolicyFingerprintLine(trimmed string) (string, bool) {
-	if trimmed == "" {
-		return "", false
-	}
-	normalized := normalizeDevinFingerprintLine(trimmed)
-	for _, entry := range devinContentPolicyFingerprintReplacements {
-		if strings.HasPrefix(normalized, normalizeDevinFingerprintLine(entry.prefix)) {
-			return entry.replacement, true
-		}
-	}
-	return "", false
-}
-
-// isDevinContentPolicyFingerprintLine reports whether the line is one of the known
-// upstream content-policy fingerprints. Matching is prefix based so the trailing
-// explanation on the same line is dropped together with it.
-func isDevinContentPolicyFingerprintLine(trimmed string) bool {
-	if trimmed == "" {
-		return false
-	}
-	normalized := normalizeDevinFingerprintLine(trimmed)
-	for _, prefix := range devinContentPolicyFingerprintLinePrefixes {
-		if strings.HasPrefix(normalized, normalizeDevinFingerprintLine(prefix)) {
-			return true
-		}
-	}
-	return false
-}
-
-// normalizeDevinFingerprintLine folds the cosmetic differences that do not lift
-// upstream rejection: curly apostrophes become ASCII, and the separators clients
-// put between a clause and its explanation all collapse to a single space. Only
-// separators surrounded by spaces are folded, so a leading list marker ("- item")
-// is never rewritten.
-func normalizeDevinFingerprintLine(line string) string {
-	normalized := strings.ReplaceAll(line, "\u2019", "'")
-	normalized = strings.ReplaceAll(normalized, " \u2014 ", " ")
-	normalized = strings.ReplaceAll(normalized, " \u2013 ", " ")
-	normalized = strings.ReplaceAll(normalized, " - ", " ")
-	return normalized
 }
 
 // clampDevinTemperature lifts an exact zero temperature to DevinMinTemperature.

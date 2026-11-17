@@ -25,6 +25,7 @@ RUN mkdir /CLIProxyAPI
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
+COPY config.devin-fingerprints.example.yaml /CLIProxyAPI/config.devin-fingerprints.example.yaml
 
 WORKDIR /CLIProxyAPI
 

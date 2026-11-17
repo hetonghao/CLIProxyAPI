@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -178,6 +179,87 @@ func TestDevinSensitivePatternsReplaceFromYAML(t *testing.T) {
 	want := "You are a coding assistant.\nFollow project conventions."
 	if got != want {
 		t.Fatalf("SanitizeDevinSystemPrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestDevinFingerprintConfigurationWireAndReload(t *testing.T) {
+	data, errRead := os.ReadFile("../../../config.devin-fingerprints.example.yaml")
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	cfg, errParse := config.ParseConfigBytes(data)
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	if len(cfg.Devin.SensitivePatternsReplace) != 8 {
+		t.Fatal("all compatibility rules must survive configuration loading")
+	}
+	systemPrompt := "1. Read `SOUL.md` — this is who you are\n" +
+		"2. Read `USER.md` — this is who you're helping\n" +
+		"*This file is yours to evolve. As you learn who you are, update it.*\n" +
+		"- Use the Agent tool with specialized agents when the task at hand matches the agent's description. Trailing explanation.\n" +
+		"Keep this ordinary instruction."
+	exec := NewDevinExecutor(cfg)
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key"}}
+	for _, source := range []sdktranslator.Format{sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", source, stream), func(t *testing.T) {
+				doc := ojson.NewDocString(`{"model":"devin/gpt-6-1-sol","temperature":0}`)
+				_ = doc.Set("stream", stream)
+				if source == sdktranslator.FormatOpenAI {
+					_ = doc.Set("messages", []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": "Do not change this history: " + systemPrompt}})
+				} else {
+					_ = doc.Set("instructions", systemPrompt)
+					_ = doc.Set("input", []map[string]any{{"role": "user", "content": "Do not change this history: " + systemPrompt}})
+				}
+				payload := doc.Bytes()
+				original := bytes.Clone(payload)
+				req, _, logged, errPrepare := exec.prepareDevinHTTPRequest(context.Background(), auth,
+					cliproxyexecutor.Request{Model: "devin/gpt-6-1-sol", Payload: payload},
+					cliproxyexecutor.Options{SourceFormat: source, OriginalRequest: payload, Stream: stream})
+				if errPrepare != nil {
+					t.Fatal(errPrepare)
+				}
+				_, wire, errFrame := helps.ReadConnectFrame(req.Body)
+				_ = req.Body.Close()
+				if errFrame != nil {
+					t.Fatal(errFrame)
+				}
+				_, view, errDecode := helps.FinalizeDevinPayload(wire, func(body []byte) []byte { return body })
+				if errDecode != nil {
+					t.Fatal(errDecode)
+				}
+				got := ojson.GetBytes(view, "system_prompt").String()
+				for _, want := range []string{"1. Read `SOUL.md` — your identity", "2. Read `USER.md` — information about the user", "*This file is yours to evolve — update it over time.*", "Keep this ordinary instruction."} {
+					if !strings.Contains(got, want) {
+						t.Fatalf("wire system prompt lost %q: %q", want, got)
+					}
+				}
+				if strings.Contains(got, "specialized agents") || strings.Contains(got, "this is who") {
+					t.Fatalf("wire system prompt retained a fingerprint: %q", got)
+				}
+				if logSystem := ojson.GetBytes(logged, "system_prompt").String(); logSystem != got {
+					t.Fatalf("wire and upstream diagnostic view differ: %q != %q", got, logSystem)
+				}
+				if temperature := ojson.GetBytes(view, "completion_config.temperature").Float(); temperature != helps.DevinMinTemperature {
+					t.Fatalf("zero-temperature compatibility regressed: %v", temperature)
+				}
+				if !bytes.Equal(payload, original) || !bytes.Contains(wire, []byte("Do not change this history: "+systemPrompt)) {
+					t.Fatal("configuration rewrote caller input or user history")
+				}
+			})
+		}
+	}
+	// A changed configuration must invalidate the executor's compiled matcher.
+	old := exec.getSensitiveWordMatcher()
+	cfg.Devin.SensitivePatternsReplace[0].Replacement = "1. Read `SOUL.md` — the configured identity"
+	updated := exec.getSensitiveWordMatcher()
+	if updated == old || !strings.Contains(helps.SanitizeDevinSystemPrompt(systemPrompt, updated), "the configured identity") {
+		t.Fatal("updated fingerprint configuration reused the old matcher")
+	}
+	cfg.Devin.SensitivePatternsReplace = nil
+	if matcher := exec.getSensitiveWordMatcher(); matcher != nil {
+		t.Fatal("removing configured rules left the old matcher active")
 	}
 }
 

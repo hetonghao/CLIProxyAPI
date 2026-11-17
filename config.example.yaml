@@ -1275,6 +1275,8 @@ oauth:
     #     - "proxy"
     #   sensitive-words-replace:     # optional: literal sensitive-word replacements ("target": "replacement") in system prompts
     #     "Claude Code": "Claude"
+    #   # AI Cove compatibility rules are configuration-only; merge the rules from
+    #   # config.devin-fingerprints.example.yaml before upgrading an AI Cove instance.
     #   sensitive-patterns-replace:  # optional: ordered Go RE2 regex replacements in system prompts ("replacement": "" deletes matches)
     #     - pattern: '(?m)^You are omp[^\n]*\n?'
     #       replacement: ""

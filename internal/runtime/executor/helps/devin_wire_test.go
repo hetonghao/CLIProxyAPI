@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -1088,7 +1091,83 @@ func TestBuildDevinGetChatMessageRequest_ObfuscatesEmbeddedExecDescriptions(t *t
 	}
 }
 
+func devinFingerprintConfigMatcher(t *testing.T) *SensitiveWordMatcher {
+	t.Helper()
+	data, errRead := os.ReadFile("../../../../config.devin-fingerprints.example.yaml")
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	cfg, errParse := config.ParseConfigBytes(data)
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	if len(cfg.Devin.SensitivePatternsReplace) != 8 {
+		t.Fatalf("fingerprint config loaded %d rules, want 8", len(cfg.Devin.SensitivePatternsReplace))
+	}
+	matcher := BuildSensitiveWordMatcherWithPatterns(cfg.Devin.SensitiveWords, cfg.Devin.SensitiveWordsReplace, cfg.Devin.SensitivePatternsReplace)
+	if matcher == nil || len(matcher.patternRules) != 8 {
+		t.Fatal("fingerprint config did not compile all eight rules")
+	}
+	return matcher
+}
+
+func TestDevinFingerprintsAreConfigurationOnly(t *testing.T) {
+	raw := "1. Read `SOUL.md` — this is who you are\n- Use the Agent tool with specialized agents when the task at hand matches the agent's description."
+	if got := SanitizeDevinSystemPrompt(raw, nil); got != raw {
+		t.Fatalf("unconfigured sanitizer still applies hardcoded fingerprints: %q", got)
+	}
+}
+
+func TestDevinFingerprintConfigPreservesLegacyVariants(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
+	cases := []struct{ input, replacement string }{
+		{"1. Read `SOUL.md` — this is who you are", "1. Read `SOUL.md` — your identity"},
+		{"2. Read `USER.md` — this is who you're helping", "2. Read `USER.md` — information about the user"},
+		{"*This file is yours to evolve. As you learn who you are, update it.*", "*This file is yours to evolve — update it over time.*"},
+		{"- The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation", ""},
+		{"- Use the Agent tool with specialized agents when the task at hand matches the agent's description.", ""},
+		{"- Do not use a colon before tool calls. Your tool calls may not be shown directly in the output", ""},
+		{"## METHOD 2: MARKDOWN CODE BLOCKS - Proposing or Displaying Code NOT already in Codebase", ""},
+		{"- Include a short question asking the user if they want to allow the action in `justification` parameter.", ""},
+	}
+	checked := 0
+	for _, tc := range cases {
+		base := strings.NewReplacer(" — ", " ", " – ", " ", " - ", " ").Replace(tc.input)
+		for _, separator := range []string{" ", " — ", " – ", " - ", " — – ", " – — ", " — – — - – — "} {
+			for _, leading := range []string{"", "  ", "\t", "\u00a0"} {
+				for _, suffix := range []string{"", " Some trailing explanation."} {
+					for _, newline := range []string{"\n", "\r\n"} {
+						line := leading + strings.ReplaceAll(base, " ", separator) + suffix
+						for _, curly := range []bool{false, true} {
+							input := line
+							if curly {
+								input = strings.ReplaceAll(input, "'", "’")
+							}
+							raw := "Header" + newline + input + newline + "Keep this instruction."
+							want := "Header\nKeep this instruction."
+							if tc.replacement != "" {
+								want = "Header\n" + tc.replacement + "\nKeep this instruction."
+							}
+							// Exercise the configuration directly, without the old hardcoded sanitizer.
+							got := matcher.SanitizeDevinText(strings.ReplaceAll(raw, "\r\n", "\n"))
+							if got != want {
+								t.Fatalf("configured rule changed the legacy contract for %q: got %q, want %q", input, got, want)
+							}
+							if again := SanitizeDevinSystemPrompt(got, matcher); again != got {
+								t.Fatalf("configured rules are not idempotent: %q -> %q", got, again)
+							}
+							checked++
+						}
+					}
+				}
+			}
+		}
+	}
+	t.Logf("verified %d deterministic fingerprint variants", checked)
+}
+
 func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
 	fingerprints := []string{
 		"  - The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation with the user is not limited by the context window.",
 		"  - Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries.",
@@ -1102,7 +1181,7 @@ func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testin
 	kept := "Keep this ordinary instruction line."
 	for _, fingerprint := range fingerprints {
 		raw := "Header line\n" + fingerprint + "\n" + kept
-		sanitized := SanitizeDevinSystemPrompt(raw, nil)
+		sanitized := SanitizeDevinSystemPrompt(raw, matcher)
 		if strings.Contains(sanitized, strings.TrimSpace(fingerprint)) {
 			t.Errorf("fingerprint line survived sanitization: %q", fingerprint)
 		}
@@ -1113,6 +1192,7 @@ func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testin
 }
 
 func TestSanitizeDevinSystemPrompt_RewritesReusableFingerprintLines(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
 	// These fingerprints carry instruction the model still needs, so the sanitizer
 	// must rewrite them in place instead of dropping them: the numbering has to stay
 	// continuous and the rewritten line must survive a second pass unchanged.
@@ -1150,7 +1230,7 @@ func TestSanitizeDevinSystemPrompt_RewritesReusableFingerprintLines(t *testing.T
 	}
 	for _, tc := range cases {
 		raw := "Header line\n" + tc.input + "\nKeep this instruction."
-		got := SanitizeDevinSystemPrompt(raw, nil)
+		got := SanitizeDevinSystemPrompt(raw, matcher)
 		if !strings.Contains(got, tc.wantContains) {
 			t.Errorf("%s: sanitizer did not rewrite to %q, got %q", tc.name, tc.wantContains, got)
 		}
@@ -1162,13 +1242,14 @@ func TestSanitizeDevinSystemPrompt_RewritesReusableFingerprintLines(t *testing.T
 		}
 		// A rewritten line must not itself be a fingerprint, or the request would
 		// still be rejected upstream.
-		if again := SanitizeDevinSystemPrompt(got, nil); again != got {
+		if again := SanitizeDevinSystemPrompt(got, matcher); again != got {
 			t.Errorf("%s: rewrite is not stable across passes: %q -> %q", tc.name, got, again)
 		}
 	}
 }
 
 func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
 	// Each of these shares the opening words of a fingerprint but not the rejected
 	// instruction, so the sanitizer must keep them.
 	kept := []string{
@@ -1186,6 +1267,9 @@ func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
 		"9. Read `SOUL.md` — this is who you are",
 		"1. `SOUL.md` — this is who you are",
 		"1. Read `SOUL.md` first.",
+		"1. Read `SOUL.md` — — this is who you are",
+		"1. Read `SOUL.md` – – this is who you are",
+		"1. Read `SOUL.md` - - this is who you are",
 		"3. Use `memory_recall` for recent context (daily notes are on-demand)",
 		"4. If in MAIN SESSION (direct chat): `MEMORY.md` is already injected",
 		// A truncated or reworded growth note is accepted upstream as well.
@@ -1196,35 +1280,38 @@ func TestSanitizeDevinSystemPrompt_KeepsSimilarButDistinctLines(t *testing.T) {
 		"- **Long-term:** `MEMORY.md` — curated memories (auto-injected in main session)",
 	}
 	for _, line := range kept {
-		if got := SanitizeDevinSystemPrompt(line, nil); !strings.Contains(got, line) {
+		if got := SanitizeDevinSystemPrompt(line, matcher); !strings.Contains(got, line) {
 			t.Errorf("over-matched non-fingerprint line %q -> %q", line, got)
 		}
 	}
 }
 
 func TestSanitizeDevinSystemPrompt_StripsCurlyApostropheFingerprint(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
 	raw := "- Use the Agent tool with specialized agents when the task at hand matches the agent\u2019s description. Subagents are valuable for parallelizing independent queries."
-	sanitized := SanitizeDevinSystemPrompt(raw, nil)
+	sanitized := SanitizeDevinSystemPrompt(raw, matcher)
 	if strings.Contains(sanitized, "specialized agents") {
 		t.Fatalf("curly-apostrophe fingerprint survived sanitization: %q", sanitized)
 	}
 }
 
 func TestSanitizeDevinSystemPrompt_ReplacementLineSurvivesSecondPass(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
 	raw := "- Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period."
-	once := SanitizeDevinSystemPrompt(raw, nil)
+	once := SanitizeDevinSystemPrompt(raw, matcher)
 	if strings.Contains(once, "Do not use a colon before tool calls.") {
 		t.Fatalf("fingerprint line was not stripped: %q", once)
 	}
 	// The sanitized replacement starts with a different terminator, so a second pass
 	// must keep it instead of progressively deleting user-visible instructions.
 	replacement := "- Do not use a colon before tool calls; end the sentence with a period."
-	if twice := SanitizeDevinSystemPrompt(replacement, nil); twice != replacement {
+	if twice := SanitizeDevinSystemPrompt(replacement, matcher); twice != replacement {
 		t.Fatalf("second pass altered the replacement line: %q", twice)
 	}
 }
 
 func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolPhrase(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
 	systemPrompt := "Header line.\n" +
 		"- The system will automatically compress prior messages in your conversation as it approaches context limits. This means your conversation with the user is not limited by the context window.\n" +
 		"- Include a short question asking the user if they want to allow the action in `justification` parameter. e.g. \"Do you want to install?\"\n" +
@@ -1236,7 +1323,7 @@ func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolP
 		Parameters: []byte(`{"type":"object"}`),
 	}}
 
-	reqStr := string(BuildDevinGetChatMessageRequest("token", "seed", "gpt-6-astra", systemPrompt, nil, tools, nil, 1000, "session", "cascade", nil))
+	reqStr := string(BuildDevinGetChatMessageRequest("token", "seed", "gpt-6-astra", systemPrompt, nil, tools, nil, 1000, "session", "cascade", matcher))
 	for _, rejected := range []string{
 		"automatically compress prior messages",
 		"justification` parameter. e.g.",
@@ -1253,7 +1340,7 @@ func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolP
 		t.Errorf("wire request lost unrelated tool description content")
 	}
 
-	logBody := string(BuildDevinUpstreamLogBody(nil, false, "gpt-6-astra", systemPrompt, nil, tools, nil, 1000, "session", "cascade"))
+	logBody := string(BuildDevinUpstreamLogBody(nil, false, "gpt-6-astra", SanitizeDevinSystemPrompt(systemPrompt, matcher), nil, tools, nil, 1000, "session", "cascade"))
 	if strings.Contains(logBody, "You can access any file directly by using this tool.") {
 		t.Errorf("upstream log body still carries the rejected Read phrase")
 	}
