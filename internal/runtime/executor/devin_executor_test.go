@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -657,6 +658,62 @@ func TestParseInteractionsPayload_WithImages(t *testing.T) {
 	}
 	if !strings.HasPrefix(p.Content, "[Image 1: pasted_image_1.png]\n\ntranscribe this") {
 		t.Errorf("prompt content = %q, want expected prefix", p.Content)
+	}
+}
+
+func TestDevinExecutorRejectsImagesForTextOnlyModel(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	clientID := "test-devin-image-capability"
+	reg.RegisterClient(clientID, "devin", []*registry.ModelInfo{
+		{ID: "devin/swe-2-flash", Object: "model", Type: "devin", SupportedInputModalities: []string{"text"}, ExplicitInputModalities: true},
+		{ID: "swe-2-flash", Object: "model", Type: "devin", SupportedInputModalities: []string{"text"}, ExplicitInputModalities: true},
+		{ID: "devin/swe-2", Object: "model", Type: "devin", SupportedInputModalities: []string{"text", "image"}, ExplicitInputModalities: true},
+	})
+	t.Cleanup(func() { reg.UnregisterClient(clientID) })
+
+	exec := NewDevinExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key"}}
+	imagePayload := []byte(`{"model":"devin/swe-2-flash","input":[{"type":"user_input","content":[{"type":"text","text":"transcribe this"},{"type":"image","mime_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAA"}]}]}`)
+	for _, model := range []string{"devin/swe-2-flash", "swe-2-flash", "devin/swe-2-flash:high"} {
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatInteractions, OriginalRequest: imagePayload}
+		req, _, _, err := exec.prepareDevinHTTPRequest(context.Background(), auth, cliproxyexecutor.Request{Model: model, Payload: imagePayload}, opts)
+		if req != nil {
+			t.Fatalf("%s: image request must not be prepared", model)
+		}
+		var unsupported *helps.DevinUnsupportedImageError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("%s: error = %v, want *helps.DevinUnsupportedImageError", model, err)
+		}
+		if unsupported.StatusCode() != http.StatusBadRequest || !unsupported.IsRequestScoped() {
+			t.Fatalf("%s: status/request-scoped = %d/%v, want 400/true", model, unsupported.StatusCode(), unsupported.IsRequestScoped())
+		}
+	}
+
+	imageOpts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatInteractions, OriginalRequest: imagePayload}
+	if _, _, _, err := exec.prepareDevinHTTPRequest(context.Background(), auth, cliproxyexecutor.Request{Model: "devin/swe-2", Payload: imagePayload}, imageOpts); err != nil {
+		t.Fatalf("image-capable model image request rejected: %v", err)
+	}
+
+	textPayload := []byte(`{"model":"devin/swe-2-flash","input":[{"type":"user_input","content":[{"type":"text","text":"hello"}]}]}`)
+	textOpts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatInteractions, OriginalRequest: textPayload}
+	if _, _, _, err := exec.prepareDevinHTTPRequest(context.Background(), auth, cliproxyexecutor.Request{Model: "devin/swe-2-flash", Payload: textPayload}, textOpts); err != nil {
+		t.Fatalf("text-only model text request rejected: %v", err)
+	}
+
+	// Payload rules are the final semantic barrier: removing images must make
+	// the text-only model request valid, and switching to an image-capable
+	// model must also be honored.
+	filtered := NewDevinExecutor(&config.Config{Payload: config.PayloadConfig{
+		Filter: []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "*"}}, Params: []string{"prompts.0.images"}}},
+	}})
+	if _, _, _, err := filtered.prepareDevinHTTPRequest(context.Background(), auth, cliproxyexecutor.Request{Model: "devin/swe-2-flash", Payload: imagePayload}, imageOpts); err != nil {
+		t.Fatalf("payload rule removing images was applied after the capability check: %v", err)
+	}
+	overridden := NewDevinExecutor(&config.Config{Payload: config.PayloadConfig{
+		Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "*"}}, Params: map[string]any{"model": "devin/swe-2"}}},
+	}})
+	if _, _, _, err := overridden.prepareDevinHTTPRequest(context.Background(), auth, cliproxyexecutor.Request{Model: "devin/swe-2-flash", Payload: imagePayload}, imageOpts); err != nil {
+		t.Fatalf("payload rule switching to an image-capable model was rejected: %v", err)
 	}
 }
 

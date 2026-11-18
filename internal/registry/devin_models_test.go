@@ -603,3 +603,76 @@ func TestValidateDevinModelsJSON_AggregatesThinkingVariants_Issue6141(t *testing
 		t.Fatalf("expected thinking levels %v, got %v", expectedLevels, models[0].Thinking.Levels)
 	}
 }
+
+func TestWithDevinBuiltinsMarksSWE2FlashTextOnly(t *testing.T) {
+	flash := &ModelInfo{
+		ID:                       "devin/swe-2-flash",
+		DisplayName:              "SWE-2 Flash",
+		ContextLength:            262144,
+		MaxCompletionTokens:      64000,
+		SupportedInputModalities: []string{"text", "image"},
+		Thinking:                 &ThinkingSupport{Levels: []string{"medium", "high", "max"}},
+	}
+	swe2 := &ModelInfo{ID: "devin/swe-2", SupportedInputModalities: []string{"text", "image"}}
+	upper := &ModelInfo{ID: "DEVIN/SWE-2-FLASH", SupportedInputModalities: []string{"text", "image"}}
+	models := WithDevinBuiltins([]*ModelInfo{flash, swe2, upper})
+
+	var gotFlash, gotSWE2, gotUpper *ModelInfo
+	for _, model := range models {
+		switch model.ID {
+		case "devin/swe-2-flash":
+			gotFlash = model
+		case "devin/swe-2":
+			gotSWE2 = model
+		case "DEVIN/SWE-2-FLASH":
+			gotUpper = model
+		}
+	}
+	if gotFlash == nil || gotSWE2 == nil || gotUpper == nil {
+		t.Fatal("expected both swe-2-flash and swe-2 in the catalog")
+	}
+	if !reflect.DeepEqual(gotFlash.SupportedInputModalities, []string{"text"}) {
+		t.Errorf("swe-2-flash modalities = %v, want [text]", gotFlash.SupportedInputModalities)
+	}
+	if !gotFlash.ExplicitInputModalities {
+		t.Error("swe-2-flash must be marked with explicit input modalities")
+	}
+	if gotFlash.ContextLength != 262144 || gotFlash.MaxCompletionTokens != 64000 || gotFlash.DisplayName != "SWE-2 Flash" {
+		t.Errorf("unrelated swe-2-flash metadata changed: %+v", gotFlash)
+	}
+	if gotFlash.Thinking == nil || !reflect.DeepEqual(gotFlash.Thinking.Levels, []string{"medium", "high", "max"}) {
+		t.Errorf("swe-2-flash thinking levels changed: %+v", gotFlash.Thinking)
+	}
+	if !reflect.DeepEqual(gotSWE2.SupportedInputModalities, []string{"text", "image"}) {
+		t.Errorf("swe-2 modalities = %v, want [text image]", gotSWE2.SupportedInputModalities)
+	}
+	if !reflect.DeepEqual(gotUpper.SupportedInputModalities, []string{"text"}) || !gotUpper.ExplicitInputModalities {
+		t.Errorf("uppercase swe-2-flash override = %v/%v, want [text]/true", gotUpper.SupportedInputModalities, gotUpper.ExplicitInputModalities)
+	}
+}
+
+func TestLookupDevinModelMarksSWE2FlashTextOnly(t *testing.T) {
+	devinCatalogStore.mu.Lock()
+	original := devinCatalogStore.models
+	devinCatalogStore.models = []*ModelInfo{{
+		ID:                       "devin/swe-2-flash",
+		SupportedInputModalities: []string{"text", "image"},
+	}}
+	devinCatalogStore.mu.Unlock()
+	defer func() {
+		devinCatalogStore.mu.Lock()
+		devinCatalogStore.models = original
+		devinCatalogStore.mu.Unlock()
+	}()
+
+	got := LookupDevinModel("swe-2-flash")
+	if got == nil {
+		t.Fatal("LookupDevinModel(swe-2-flash) = nil")
+	}
+	if !reflect.DeepEqual(got.SupportedInputModalities, []string{"text"}) {
+		t.Errorf("lookup modalities = %v, want [text]", got.SupportedInputModalities)
+	}
+	if !got.ExplicitInputModalities {
+		t.Error("lookup result must carry explicit input modalities")
+	}
+}

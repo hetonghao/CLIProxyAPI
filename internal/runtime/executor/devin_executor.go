@@ -541,6 +541,12 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	if errPayload != nil {
 		return nil, "", nil, errPayload
 	}
+	// Payload rules are the final semantic barrier, so the capability check
+	// uses the finalized business view: a rule may remove images or switch to
+	// an image-capable model, and a rule may also add images.
+	if errImage := helps.CheckDevinImageInputPayload(logBody); errImage != nil {
+		return nil, "", nil, errImage
+	}
 
 	framed, compressed := helps.WrapDevinRequestBody(protoBytes)
 	url := strings.TrimRight(baseURL, "/") + helps.DevinChatPath

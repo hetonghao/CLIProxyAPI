@@ -58,6 +58,27 @@ func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 	}
 }
 
+// applyDevinModelOverrides pins capability facts that upstream metadata does
+// not express. Devin's swe-2-flash accepts text only; image turns are rejected
+// upstream with a generic invalid_argument, so the request layer checks this
+// explicit marker before forwarding.
+func applyDevinModelOverrides(model *ModelInfo) {
+	if model == nil {
+		return
+	}
+	modelID := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model.ID)), "devin/")
+	if modelID == "swe-2-flash" {
+		model.SupportedInputModalities = []string{"text"}
+		model.ExplicitInputModalities = true
+	}
+}
+
+func cloneDevinModelWithOverrides(model *ModelInfo) *ModelInfo {
+	clone := cloneModelInfo(model)
+	applyDevinModelOverrides(clone)
+	return clone
+}
+
 // WithDevinBuiltins preserves the SWE-1.6 Slow override and adds missing
 // model definitions without replacing upstream metadata.
 func WithDevinBuiltins(models []*ModelInfo) []*ModelInfo {
@@ -165,6 +186,9 @@ func WithDevinBuiltins(models []*ModelInfo) []*ModelInfo {
 			models = append(models, builtin)
 		}
 	}
+	for _, model := range models {
+		applyDevinModelOverrides(model)
+	}
 	return models
 }
 
@@ -207,13 +231,13 @@ func LookupDevinModel(modelID string) *ModelInfo {
 	for _, m := range models {
 		mClean := strings.ToLower(strings.TrimPrefix(m.ID, "devin/"))
 		if mClean == clean {
-			return cloneModelInfo(m)
+			return cloneDevinModelWithOverrides(m)
 		}
 	}
 	for _, m := range WithDevinBuiltins(nil) {
 		mClean := strings.ToLower(strings.TrimPrefix(m.ID, "devin/"))
 		if mClean == clean {
-			return cloneModelInfo(m)
+			return cloneDevinModelWithOverrides(m)
 		}
 	}
 
@@ -223,11 +247,25 @@ func LookupDevinModel(modelID string) *ModelInfo {
 		for _, m := range models {
 			mClean := strings.ToLower(strings.TrimPrefix(m.ID, "devin/"))
 			if mClean == base {
-				return cloneModelInfo(m)
+				return cloneDevinModelWithOverrides(m)
 			}
 		}
 	}
 	return nil
+}
+
+// DevinModelIsTextOnly reports whether the local catalog pins this model to
+// text-only input. Thinking variants resolve to their base model.
+func DevinModelIsTextOnly(model string) bool {
+	info := LookupDevinModel(model)
+	if info == nil {
+		info = LookupModelInfo(model, "devin")
+	}
+	if info == nil {
+		return false
+	}
+	id := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(info.ID)), "devin/")
+	return id == "swe-2-flash"
 }
 
 // GetDevinModelsJSON returns the current raw JSON payload of the Devin model catalog.
