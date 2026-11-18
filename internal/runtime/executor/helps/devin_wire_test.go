@@ -1346,6 +1346,31 @@ func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolP
 	}
 }
 
+func TestBuildDevinGetChatMessageRequest_NeutralizesOpenClawBrowserPhrase(t *testing.T) {
+	const description = "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions). Use snapshot+act for UI automation."
+	tools := []DevinTool{{
+		Name:        "browser",
+		Description: description,
+		Parameters:  []byte(`{"type":"object"}`),
+	}}
+
+	wire := string(BuildDevinGetChatMessageRequest("token", "seed", "gpt-6-luna-medium", "sys", nil, tools, nil, 1000, "session", "cascade", nil))
+	if strings.Contains(strings.ToLower(wire), "via openclaw") {
+		t.Errorf("wire request still carries the Devin-rejected OpenClaw phrase")
+	}
+	if !strings.Contains(wire, "using OpenClaw") {
+		t.Errorf("wire request does not carry the neutral OpenClaw phrase")
+	}
+	if !strings.Contains(wire, "Use snapshot+act for UI automation.") {
+		t.Errorf("wire request lost unrelated browser description content")
+	}
+
+	logBody := string(BuildDevinUpstreamLogBody(nil, false, "gpt-6-luna-medium", "sys", nil, tools, nil, 1000, "session", "cascade"))
+	if strings.Contains(strings.ToLower(logBody), "via openclaw") {
+		t.Errorf("upstream log body still carries the Devin-rejected OpenClaw phrase")
+	}
+}
+
 func TestClampDevinTemperature(t *testing.T) {
 	// The upstream rejects an exact zero with a generic invalid_argument error
 	// while every positive value is accepted, so zero must be nudged above it.

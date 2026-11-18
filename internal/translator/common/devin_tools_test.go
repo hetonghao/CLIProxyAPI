@@ -120,6 +120,34 @@ func TestSanitizeDevinToolDescription(t *testing.T) {
 	}
 }
 
+func TestSanitizeDevinToolDescription_NeutralizesOpenClawBrowserPhrase(t *testing.T) {
+	const desc = "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions). Use snapshot+act for UI automation."
+	sanitized := SanitizeDevinToolDescription("browser", desc)
+	if strings.Contains(strings.ToLower(sanitized), "via openclaw") {
+		t.Fatalf("Devin-rejected OpenClaw phrase survived sanitization: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "using OpenClaw") {
+		t.Fatalf("expected neutral OpenClaw phrase in sanitized description: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "Use snapshot+act for UI automation.") {
+		t.Fatalf("unrelated browser instructions were modified: %q", sanitized)
+	}
+	if again := SanitizeDevinToolDescription("browser", sanitized); again != sanitized {
+		t.Fatalf("sanitizer is not idempotent: %q -> %q", sanitized, again)
+	}
+
+	lower := "control the browser via openclaw's browser control server"
+	lowerSanitized := SanitizeDevinToolDescription("browser", lower)
+	if strings.Contains(strings.ToLower(lowerSanitized), "via openclaw") {
+		t.Fatalf("case-insensitive OpenClaw phrase survived sanitization: %q", lowerSanitized)
+	}
+
+	unrelated := "Control the browser via Foo"
+	if got := SanitizeDevinToolDescription("browser", unrelated); got != unrelated {
+		t.Fatalf("unrelated browser description was modified: %q", got)
+	}
+}
+
 func TestSanitizeDevinToolDescription_NeutralizesReadAnyFilePhrase(t *testing.T) {
 	desc := "Reads a file from the local filesystem. You can access any file directly by using this tool.\nUsage:\n- The file_path parameter must be an absolute path."
 	sanitized := SanitizeDevinToolDescription("Read", desc)

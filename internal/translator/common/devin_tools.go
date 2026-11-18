@@ -61,6 +61,14 @@ const devinUnrestrictedFileReadPhrase = "You can access any file directly by usi
 
 const devinUnrestrictedFileReadReplacement = "You can access files by path with this tool."
 
+// Devin's tool-description filter rejects the OpenClaw browser-control opener
+// with "Unable to process request due to an MCP configuration issue." The
+// connector is the only rejected part; the rest of the description and the
+// tool schema stay intact, so the instruction keeps its original meaning.
+const devinBrowserControlReplacement = "Control the browser using OpenClaw"
+
+var devinBrowserControlRegex = regexp.MustCompile(`(?i)Control the browser via OpenClaw`)
+
 // SanitizeDevinToolDescription applies description obfuscation for Devin function tools.
 // Clients may embed exec_command or write_stdin descriptions inside another tool
 // (such as the Codex code-mode "exec" tool), and Devin rejects those phrases
@@ -70,6 +78,7 @@ func SanitizeDevinToolDescription(_ string, desc string) string {
 		return desc
 	}
 	desc = strings.ReplaceAll(desc, devinUnrestrictedFileReadPhrase, devinUnrestrictedFileReadReplacement)
+	desc = devinBrowserControlRegex.ReplaceAllString(desc, devinBrowserControlReplacement)
 	desc = ObfuscateExecCommandDescription(desc)
 	desc = ObfuscateWriteStdinDescription(desc)
 	return desc
