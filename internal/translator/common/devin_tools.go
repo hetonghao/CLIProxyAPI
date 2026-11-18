@@ -69,6 +69,12 @@ const devinBrowserControlReplacement = "Control the browser using OpenClaw"
 
 var devinBrowserControlRegex = regexp.MustCompile(`(?i)Control the browser via OpenClaw`)
 
+// Devin also rejects the OpenClaw exec tool's continuation sentence with the
+// same MCP error. Keep the meaning while replacing the rejected connector.
+const devinExecBackgroundReplacement = "Use yieldMs/background to continue later with the process tool"
+
+var devinExecBackgroundRegex = regexp.MustCompile(`(?i)Use yieldMs/background to continue later via process tool`)
+
 // SanitizeDevinToolDescription applies description obfuscation for Devin function tools.
 // Clients may embed exec_command or write_stdin descriptions inside another tool
 // (such as the Codex code-mode "exec" tool), and Devin rejects those phrases
@@ -79,6 +85,7 @@ func SanitizeDevinToolDescription(_ string, desc string) string {
 	}
 	desc = strings.ReplaceAll(desc, devinUnrestrictedFileReadPhrase, devinUnrestrictedFileReadReplacement)
 	desc = devinBrowserControlRegex.ReplaceAllString(desc, devinBrowserControlReplacement)
+	desc = devinExecBackgroundRegex.ReplaceAllString(desc, devinExecBackgroundReplacement)
 	desc = ObfuscateExecCommandDescription(desc)
 	desc = ObfuscateWriteStdinDescription(desc)
 	return desc

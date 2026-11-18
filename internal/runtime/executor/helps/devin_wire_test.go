@@ -1346,28 +1346,36 @@ func TestBuildDevinGetChatMessageRequest_StripsContentPolicyFingerprintsAndToolP
 	}
 }
 
-func TestBuildDevinGetChatMessageRequest_NeutralizesOpenClawBrowserPhrase(t *testing.T) {
-	const description = "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions). Use snapshot+act for UI automation."
-	tools := []DevinTool{{
-		Name:        "browser",
-		Description: description,
-		Parameters:  []byte(`{"type":"object"}`),
-	}}
+func TestBuildDevinGetChatMessageRequest_NeutralizesRejectedAgentToolPhrases(t *testing.T) {
+	const browserDescription = "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions). Use snapshot+act for UI automation."
+	const execDescription = "Execute shell commands with background continuation. Use yieldMs/background to continue later via process tool. Use pty=true for TTY-required commands."
+	tools := []DevinTool{
+		{Name: "browser", Description: browserDescription, Parameters: []byte(`{"type":"object"}`)},
+		{Name: "exec", Description: execDescription, Parameters: []byte(`{"type":"object"}`)},
+	}
 
 	wire := string(BuildDevinGetChatMessageRequest("token", "seed", "gpt-6-luna-medium", "sys", nil, tools, nil, 1000, "session", "cascade", nil))
-	if strings.Contains(strings.ToLower(wire), "via openclaw") {
-		t.Errorf("wire request still carries the Devin-rejected OpenClaw phrase")
+	for _, rejected := range []string{"via openclaw", "via process tool"} {
+		if strings.Contains(strings.ToLower(wire), rejected) {
+			t.Errorf("wire request still carries the Devin-rejected phrase %q", rejected)
+		}
 	}
-	if !strings.Contains(wire, "using OpenClaw") {
-		t.Errorf("wire request does not carry the neutral OpenClaw phrase")
+	for _, neutral := range []string{"using OpenClaw", "with the process tool"} {
+		if !strings.Contains(wire, neutral) {
+			t.Errorf("wire request does not carry the neutral phrase %q", neutral)
+		}
 	}
-	if !strings.Contains(wire, "Use snapshot+act for UI automation.") {
-		t.Errorf("wire request lost unrelated browser description content")
+	for _, kept := range []string{"Use snapshot+act for UI automation.", "Use pty=true for TTY-required commands."} {
+		if !strings.Contains(wire, kept) {
+			t.Errorf("wire request lost unrelated tool description content %q", kept)
+		}
 	}
 
 	logBody := string(BuildDevinUpstreamLogBody(nil, false, "gpt-6-luna-medium", "sys", nil, tools, nil, 1000, "session", "cascade"))
-	if strings.Contains(strings.ToLower(logBody), "via openclaw") {
-		t.Errorf("upstream log body still carries the Devin-rejected OpenClaw phrase")
+	for _, rejected := range []string{"via openclaw", "via process tool"} {
+		if strings.Contains(strings.ToLower(logBody), rejected) {
+			t.Errorf("upstream log body still carries the Devin-rejected phrase %q", rejected)
+		}
 	}
 }
 

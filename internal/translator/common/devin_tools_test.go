@@ -148,6 +148,34 @@ func TestSanitizeDevinToolDescription_NeutralizesOpenClawBrowserPhrase(t *testin
 	}
 }
 
+func TestSanitizeDevinToolDescription_NeutralizesExecBackgroundPhrase(t *testing.T) {
+	const desc = "Execute shell commands with background continuation. Use yieldMs/background to continue later via process tool. Use pty=true for TTY-required commands."
+	sanitized := SanitizeDevinToolDescription("exec", desc)
+	if strings.Contains(strings.ToLower(sanitized), "via process tool") {
+		t.Fatalf("Devin-rejected exec continuation phrase survived sanitization: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "with the process tool") {
+		t.Fatalf("expected neutral exec continuation phrase in sanitized description: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "Use pty=true for TTY-required commands.") {
+		t.Fatalf("unrelated exec instructions were modified: %q", sanitized)
+	}
+	if again := SanitizeDevinToolDescription("exec", sanitized); again != sanitized {
+		t.Fatalf("sanitizer is not idempotent: %q -> %q", sanitized, again)
+	}
+
+	lower := "use yieldms/background to continue later via process tool"
+	lowerSanitized := SanitizeDevinToolDescription("exec", lower)
+	if strings.Contains(strings.ToLower(lowerSanitized), "via process tool") {
+		t.Fatalf("case-insensitive exec phrase survived sanitization: %q", lowerSanitized)
+	}
+
+	unrelated := "Use X to continue later via process tool."
+	if got := SanitizeDevinToolDescription("exec", unrelated); got != unrelated {
+		t.Fatalf("unrelated exec description was modified: %q", got)
+	}
+}
+
 func TestSanitizeDevinToolDescription_NeutralizesReadAnyFilePhrase(t *testing.T) {
 	desc := "Reads a file from the local filesystem. You can access any file directly by using this tool.\nUsage:\n- The file_path parameter must be an absolute path."
 	sanitized := SanitizeDevinToolDescription("Read", desc)
