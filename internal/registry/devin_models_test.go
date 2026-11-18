@@ -357,8 +357,8 @@ func TestDevinSWE16Slow_Issue6111(t *testing.T) {
 func TestWithDevinBuiltins(t *testing.T) {
 	// Test WithDevinBuiltins with nil slice
 	builtins := WithDevinBuiltins(nil)
-	if len(builtins) != 5 {
-		t.Fatalf("expected 5 builtin models, got %d", len(builtins))
+	if len(builtins) != 7 {
+		t.Fatalf("expected 7 builtin models, got %d", len(builtins))
 	}
 	if builtins[0].ID != "devin/swe-1-6-slow" {
 		t.Errorf("expected ID 'devin/swe-1-6-slow', got %q", builtins[0].ID)
@@ -369,8 +369,8 @@ func TestWithDevinBuiltins(t *testing.T) {
 		{ID: "devin/swe-2", DisplayName: "SWE-2"},
 	}
 	merged := WithDevinBuiltins(existing)
-	if len(merged) != 6 {
-		t.Fatalf("expected 6 models, got %d", len(merged))
+	if len(merged) != 8 {
+		t.Fatalf("expected 8 models, got %d", len(merged))
 	}
 
 	// Test WithDevinBuiltins replaces duplicate
@@ -378,8 +378,8 @@ func TestWithDevinBuiltins(t *testing.T) {
 		{ID: "devin/swe-1-6-slow", DisplayName: "Old Display Name"},
 	}
 	replaced := WithDevinBuiltins(duplicate)
-	if len(replaced) != 5 {
-		t.Fatalf("expected 5 models after deduplication, got %d", len(replaced))
+	if len(replaced) != 7 {
+		t.Fatalf("expected 7 models after deduplication, got %d", len(replaced))
 	}
 	if replaced[0].DisplayName != "SWE-1.6 Slow" {
 		t.Errorf("expected DisplayName 'SWE-1.6 Slow', got %q", replaced[0].DisplayName)
