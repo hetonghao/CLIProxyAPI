@@ -484,7 +484,14 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 		}
 	}
 
-	chatModelUID := helps.ResolveDevinChatModelUID(req.Model, thinkingLevel, budgetTokens)
+	chatModelUID, errModel := helps.ResolveDevinRequestModelUID(req.Model, helps.DevinModelOptions{
+		ThinkingLevel: thinkingLevel,
+		BudgetTokens:  budgetTokens,
+		ServiceTier:   ojson.GetBytesNoCopy(payload, "service_tier").String(),
+	})
+	if errModel != nil {
+		return nil, "", nil, errModel
+	}
 	if strings.HasPrefix(chatModelUID, "gemini-") || strings.HasPrefix(chatModelUID, "MODEL_GOOGLE_GEMINI_") {
 		for i := range tools {
 			tools[i].Parameters = helps.NormalizeDevinGeminiToolSchema(tools[i].Parameters)
@@ -550,7 +557,7 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 		httpReq.Header.Set("Connect-Content-Encoding", "gzip")
 	}
 
-	return httpReq, chatModelUID, logBody, nil
+	return httpReq, ojson.GetBytesNoCopy(logBody, "model").String(), logBody, nil
 }
 
 const maxDevinToolCalls = 128

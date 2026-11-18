@@ -45,6 +45,25 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
 </tbody>
 </table>
 
+## Devin GPT Fast 模式
+
+Devin 授权下的 GPT-6.2 Astra 和 GPT-6.2 Sol 支持通过 `service_tier: "priority"` 开启 Fast。推理强度独立由 `reasoning.effort`（Responses）或 `reasoning_effort`（Chat Completions）控制：
+
+```json
+{
+  "model": "devin/gpt-6-2-astra",
+  "service_tier": "priority",
+  "reasoning": { "effort": "high" },
+  "input": "你好"
+}
+```
+
+此请求发出的 Devin UID 为 `gpt-6-2-astra-high-priority`。两个型号均支持 `low`、`medium`、`high`、`xhigh`、`max` 五档，默认 `medium`。`default`、`auto` 或省略 `service_tier` 均不主动开启 Fast。
+
+兼容模型后缀 `(fast)` 和 `(high-fast)`：前者只开启 Fast，保留正文中的推理强度；后者同时指定 high。`(high)` 只覆盖推理强度，正文指定的 Fast 仍保留。显式 Fast 后缀优先于正文的 `default`/`auto`。模型列表继续展示基础型号；直接使用完整 `-high-priority` 或旧式 `-high-fast` UID 仍需已有路由配置注册该名称。
+
+首批仅开放上述两个 GPT 型号。对其他 GPT 型号显式请求 Fast，或为 GPT 指定不支持的 tier（如 `flex`），会返回请求级 400，不调用上游、不轮换或冷却凭据。最终 payload 规则仍可覆盖或过滤原生 `model` 字段，日志与上游模型记录使用最终 UID。Fast 的速度和额度消耗以 Devin 实际服务为准。
+
 ## 赞助商
 
 [![https://www.packyapi.com/register?aff=cliproxyapi](./assets/packycode-cn.png)](https://www.packyapi.com/register?aff=cliproxyapi)

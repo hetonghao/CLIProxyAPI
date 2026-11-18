@@ -37,6 +37,9 @@ func convertOpenAIResponsesRequestToInteractions(modelName string, inputRawJSON 
 	if agentConfig := root.Get("agent_config"); agentConfig.Exists() {
 		_ = outDoc.SetRaw("agent_config", agentConfig.Raw)
 	}
+	if serviceTier := root.Get("service_tier"); serviceTier.Exists() && serviceTier.Type == ojson.String {
+		_ = outDoc.Set("service_tier", serviceTier.String())
+	}
 	forAntigravity := isAntigravityModel(model)
 	forDevin := isDevinModel(model) || !forAntigravity
 	if input := root.Get("input"); input.Exists() {
