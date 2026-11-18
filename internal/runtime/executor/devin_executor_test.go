@@ -191,7 +191,7 @@ func TestDevinFingerprintConfigurationWireAndReload(t *testing.T) {
 	if errParse != nil {
 		t.Fatal(errParse)
 	}
-	if len(cfg.Devin.SensitivePatternsReplace) != 8 {
+	if len(cfg.Devin.SensitivePatternsReplace) != 16 {
 		t.Fatal("all compatibility rules must survive configuration loading")
 	}
 	systemPrompt := "1. Read `SOUL.md` — this is who you are\n" +

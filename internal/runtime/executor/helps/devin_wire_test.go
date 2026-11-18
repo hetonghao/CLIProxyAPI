@@ -1101,12 +1101,12 @@ func devinFingerprintConfigMatcher(t *testing.T) *SensitiveWordMatcher {
 	if errParse != nil {
 		t.Fatal(errParse)
 	}
-	if len(cfg.Devin.SensitivePatternsReplace) != 8 {
-		t.Fatalf("fingerprint config loaded %d rules, want 8", len(cfg.Devin.SensitivePatternsReplace))
+	if len(cfg.Devin.SensitivePatternsReplace) != 16 {
+		t.Fatalf("fingerprint config loaded %d rules, want 16", len(cfg.Devin.SensitivePatternsReplace))
 	}
 	matcher := BuildSensitiveWordMatcherWithPatterns(cfg.Devin.SensitiveWords, cfg.Devin.SensitiveWordsReplace, cfg.Devin.SensitivePatternsReplace)
-	if matcher == nil || len(matcher.patternRules) != 8 {
-		t.Fatal("fingerprint config did not compile all eight rules")
+	if matcher == nil || len(matcher.patternRules) != 16 {
+		t.Fatal("fingerprint config did not compile all sixteen rules")
 	}
 	return matcher
 }
@@ -1164,6 +1164,52 @@ func TestDevinFingerprintConfigPreservesLegacyVariants(t *testing.T) {
 		}
 	}
 	t.Logf("verified %d deterministic fingerprint variants", checked)
+}
+
+func TestDevinContentPolicyConfigRewritesAgentPrompt(t *testing.T) {
+	matcher := devinFingerprintConfigMatcher(t)
+	raw := "You are a personal assistant running inside OpenClaw.\n" +
+		"- **ONLY load in main session** (direct chats with your human)\n" +
+		"Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.\n" +
+		"You have access to your human's stuff. That doesn't mean you _share_ their stuff. In groups, you're a participant.\n" +
+		"In group chats where you receive every message, be **smart about when to contribute**:\n" +
+		"On platforms that support reactions (Discord, Slack), use emoji reactions naturally:\n" +
+		"Think of it like a human reviewing their journal and updating their mental model. Daily files are raw notes; MEMORY.md is curated wisdom.\n" +
+		"- nodes: List/describe/notify/camera/screen on paired nodes\n" +
+		"Keep this instruction."
+	got := SanitizeDevinSystemPrompt(raw, matcher)
+	for _, rejected := range []string{
+		"running inside OpenClaw",
+		"with your human",
+		"Skip the secrets",
+		"your human's stuff",
+		"**smart about when",
+		"(Discord, Slack)",
+		"like a human reviewing",
+		"camera/screen on paired nodes",
+	} {
+		if strings.Contains(got, rejected) {
+			t.Errorf("configured content-policy rewrite left rejected phrase %q: %q", rejected, got)
+		}
+	}
+	for _, replacement := range []string{
+		"operating inside OpenClaw",
+		"with the user",
+		"Skip private details",
+		"the user's stuff",
+		"**selective about when",
+		"reactions, use",
+		"like someone reviewing",
+		"camera/screen on paired devices",
+		"Keep this instruction.",
+	} {
+		if !strings.Contains(got, replacement) {
+			t.Errorf("configured content-policy rewrite lost %q: %q", replacement, got)
+		}
+	}
+	if again := SanitizeDevinSystemPrompt(got, matcher); again != got {
+		t.Fatalf("content-policy rewrites are not idempotent: %q -> %q", got, again)
+	}
 }
 
 func TestSanitizeDevinSystemPrompt_StripsContentPolicyFingerprintLines(t *testing.T) {
