@@ -252,6 +252,7 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if errPrep != nil {
 		return resp, errPrep
 	}
+	ctx = httpReq.Context()
 	if chatModelUID != "" {
 		reporter.SetUpstreamModel(chatModelUID)
 	}
@@ -379,6 +380,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if errPrep != nil {
 		return nil, errPrep
 	}
+	ctx = httpReq.Context()
 	if chatModelUID != "" {
 		reporter.SetUpstreamModel(chatModelUID)
 	}
@@ -448,6 +450,9 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	}
 
 	payload := req.Payload
+	if opts.SourceFormat == sdktranslator.FormatOpenAIResponse && helps.HasPendingEncryptedHandoff(payload) {
+		return nil, "", nil, statusErr{code: http.StatusBadRequest, msg: "Devin cannot read this encrypted Codex agent task; resend the assignment as a new plaintext handoff"}
+	}
 	isInteractionsSource := opts.SourceFormat == "" || opts.SourceFormat == sdktranslator.FormatInteractions
 	if !isInteractionsSource {
 		translated := sdktranslator.TranslateRequestEnvelope(ctx, opts.SourceFormat, sdktranslator.FormatInteractions, sdktranslator.RequestEnvelope{
@@ -462,6 +467,10 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 		payload = translated.Body
 	}
 	systemPrompt, prompts, tools, temp, maxTokens, sessionID, cascadeID, thinkingLevel, budgetTokens := parseInteractionsPayload(payload, opts.OriginalRequest)
+	var handoffs map[string]bool
+	if opts.SourceFormat == sdktranslator.FormatOpenAIResponse && cliproxyexecutor.ResponseFormatOrSource(opts) == sdktranslator.FormatOpenAIResponse {
+		handoffs = helps.PrepareDevinHandoffs(tools, req.Payload)
+	}
 	// Translation drops Claude effort directives and keeps only the top-level
 	// effort, which directive-sending clients pin to a cache placeholder.
 	if opts.SourceFormat == sdktranslator.FormatClaude {
@@ -551,6 +560,7 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	framed, compressed := helps.WrapDevinRequestBody(protoBytes)
 	url := strings.TrimRight(baseURL, "/") + helps.DevinChatPath
 
+	ctx = helps.WithDevinPlaintextHandoffs(ctx, handoffs, logBody)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(framed))
 	if err != nil {
 		return nil, "", nil, err

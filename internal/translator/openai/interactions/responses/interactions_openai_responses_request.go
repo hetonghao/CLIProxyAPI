@@ -806,6 +806,7 @@ func interactionsFunctionCallToResponsesWithIdentity(item ojson.Result, forAntig
 		_ = outDoc.Set("namespace", namespace)
 	}
 	_ = outDoc.Set("name", name)
+	markHandoff(outDoc, "", toolIdentityMap[rawName].PlaintextHandoff)
 	_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(outDoc, "arguments", jsonStringValue(item.Get("arguments"), "{}"))
 	return outDoc.Bytes()
 }
@@ -991,4 +992,10 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func markHandoff(doc *ojson.Doc, prefix string, plaintext bool) {
+	if plaintext {
+		_ = doc.SetRaw(prefix+"encrypted_function_args", "[]")
+	}
 }
