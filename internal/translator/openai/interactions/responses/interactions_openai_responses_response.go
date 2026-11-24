@@ -81,7 +81,6 @@ type responsesToInteractionsStreamState struct {
 }
 
 func ConvertInteractionsResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
-	_ = ctx
 	if param == nil {
 		var local any
 		param = &local
@@ -118,14 +117,13 @@ func ConvertInteractionsResponseToOpenAIResponses(ctx context.Context, modelName
 			reqJSON = requestRawJSON
 		}
 		if len(reqJSON) > 0 {
-			st.ToolIdentityMap = interactionsToolIdentityMap(reqJSON, st.ForAntigravity)
+			st.ToolIdentityMap = interactionsToolIdentityMap(ctx, reqJSON, st.ForAntigravity)
 		}
 	}
 	return convertInteractionsEventToResponses(modelName, originalRequestRawJSON, requestRawJSON, rawJSON, st)
 }
 
 func ConvertInteractionsResponseToOpenAIResponsesNonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
-	_ = ctx
 	_ = originalRequestRawJSON
 	_ = requestRawJSON
 	root := util.ParseGJSONBytesNoCopy(rawJSON)
@@ -143,7 +141,7 @@ func ConvertInteractionsResponseToOpenAIResponsesNonStream(ctx context.Context, 
 	}
 	var toolIdentityMap map[string]util.ResponsesToolIdentity
 	if len(reqJSON) > 0 {
-		toolIdentityMap = interactionsToolIdentityMap(reqJSON, forAntigravity)
+		toolIdentityMap = interactionsToolIdentityMap(ctx, reqJSON, forAntigravity)
 	}
 	patchEnabled := false
 	for _, identity := range toolIdentityMap {
@@ -687,6 +685,7 @@ func interactionsStepStopToResponses(root ojson.Result, st *interactionsToRespon
 			_ = doneDoc.Set("item.namespace", call.Namespace)
 		}
 		_ = doneDoc.Set("item.name", call.Name)
+		markHandoff(doneDoc, "item.", st.ToolIdentityMap[call.RawName].PlaintextHandoff)
 		_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(doneDoc, "item.arguments", arguments)
 		call.ItemDoneEmitted = true
 		return append(events, emitResponsesEvent("response.output_item.done", doneDoc.Bytes()))
@@ -922,6 +921,7 @@ func responsesCompletedOutputItem(index int, itemType string, st *interactionsTo
 				_ = itemDoc.Set("namespace", call.Namespace)
 			}
 			_ = itemDoc.Set("name", call.Name)
+			markHandoff(itemDoc, "", st.ToolIdentityMap[call.RawName].PlaintextHandoff)
 			_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(itemDoc, "arguments", responsesFunctionCallArguments(call))
 		}
 		return itemDoc.Bytes(), true
@@ -1549,14 +1549,15 @@ func (st *responsesToInteractionsStreamState) hasSentFunctionArgs(keys []string)
 }
 
 // Interactions uses qualified names directly, rather than Gemini's sanitized names.
-func interactionsToolIdentityMap(rawJSON []byte, forAntigravity bool) map[string]util.ResponsesToolIdentity {
+func interactionsToolIdentityMap(ctx context.Context, rawJSON []byte, forAntigravity bool) map[string]util.ResponsesToolIdentity {
 	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	if request := root.Get("request"); request.Exists() {
 		root = request
 	}
 	identities := make(map[string]util.ResponsesToolIdentity)
+	handoffs := translatorcommon.DevinPlaintextHandoffs(ctx)
 	for name, descriptor := range util.CollectResponsesToolWinners(root) {
-		identity := util.ResponsesToolIdentity{Name: strings.Clone(descriptor.LocalName), Namespace: strings.Clone(descriptor.Namespace), Custom: descriptor.ToolType == "custom", ApplyPatch: applypatch.IsCustomTool(descriptor.Tool)}
+		identity := util.ResponsesToolIdentity{PlaintextHandoff: handoffs[name] && descriptor.Namespace == "collaboration" && descriptor.ToolType == "function", Name: strings.Clone(descriptor.LocalName), Namespace: strings.Clone(descriptor.Namespace), Custom: descriptor.ToolType == "custom", ApplyPatch: applypatch.IsCustomTool(descriptor.Tool)}
 		if forAntigravity {
 			name = translatorcommon.AntigravityToolNameToUpstream(name)
 		}
@@ -1830,6 +1831,7 @@ func interactionsUpdateFunctionCall(index int, step ojson.Result, st *interactio
 		_ = addedDoc.Set("item.id", call.ID)
 		_ = addedDoc.Set("item.call_id", call.CallID)
 		translatorcommon.SetResponsesToolCallIdentityDoc(addedDoc, call.Name, call.Namespace, "item")
+		markHandoff(addedDoc, "item.", identity.PlaintextHandoff)
 		events = append(events, emitResponsesEvent("response.output_item.added", addedDoc.Bytes()))
 		call.Added = true
 	}

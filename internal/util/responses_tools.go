@@ -13,11 +13,12 @@ import (
 
 // ResponsesToolIdentity represents the resolved identity of a tool in OpenAI Responses format.
 type ResponsesToolIdentity struct {
-	Name       string
-	Namespace  string
-	Custom     bool
-	ApplyPatch bool // Resolved from the winning original declaration, never from the upstream name.
-	ToolSearch bool // Marks the function shim standing in for a client-executed tool_search declaration.
+	PlaintextHandoff bool // The selected upstream received this collaboration tool with no encrypted parameters.
+	Name             string
+	Namespace        string
+	Custom           bool
+	ApplyPatch       bool // Resolved from the winning original declaration, never from the upstream name.
+	ToolSearch       bool // Marks the function shim standing in for a client-executed tool_search declaration.
 }
 
 const (
