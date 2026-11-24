@@ -195,3 +195,56 @@ func TestDevinRejectsOnlyPendingEncryptedHandoff(t *testing.T) {
 		})
 	}
 }
+
+func TestDevinRecoversExplicitlyRejectedHandoff(t *testing.T) {
+	const sealed = `{"type":"agent_message","author":"/root","recipient":"/root/w","content":[{"type":"input_text","text":"Payload:\n"},{"type":"encrypted_content","encrypted_content":"old-secret"}]}`
+	const clear = `{"type":"agent_message","author":"/root","recipient":"/root/w","content":[{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\nREISSUED"}]}`
+	const metadata = `,{"type":"additional_tools","tools":[]},`
+	e := NewDevinExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "offline", Attributes: map[string]string{"api_key": "test"}}
+	var delivered []string
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		_, wire, err := helps.ReadConnectFrame(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		_, view, err := helps.FinalizeDevinPayload(wire, func(p []byte) []byte { return p })
+		if err != nil {
+			return nil, err
+		}
+		msgs := ojson.GetBytes(view, "prompts").Array()
+		if len(msgs) > 0 {
+			delivered = append(delivered, msgs[len(msgs)-1].Get("content").String())
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/connect+proto"}}, Body: io.NopCloser(bytes.NewReader(devinSchemaCompletionFrames()))}, nil
+	})
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", rt)
+	for _, tc := range []struct {
+		title, items, session string
+		want400               bool
+	}{
+		{"unseen mixed batch", sealed + metadata + clear, "one", true}, {"identical retry is still blocked", sealed + metadata + clear, "one", true},
+		{"newly appended resend recovers previously refused mixed batch", sealed + metadata + clear + "," + strings.Replace(clear, "REISSUED", "REPLACEMENT-REISSUED", 1), "one", false},
+		{"first refusal", sealed, "two", true}, {"retrying same ciphertext is still blocked", sealed, "two", true},
+		{"another caller or thread cannot consume the receipt", sealed + metadata + clear, "three", true},
+		{"unrelated sender is not an acknowledgement", sealed + "," + strings.Replace(clear, `"author":"/root"`, `"author":"/root/peer"`, 1), "two", true},
+		{"readable resend after refusal", sealed + metadata + clear, "two", false},
+		{"previous refusal cannot cover fresh ciphertext", sealed + metadata + clear + "," + strings.Replace(sealed, "old-secret", "new-secret", 1), "two", true},
+	} {
+		t.Run(tc.title, func(t *testing.T) {
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Headers: http.Header{"Session-Id": {tc.session}}}
+			prior := len(delivered)
+			_, err := e.Execute(ctx, auth, cliproxyexecutor.Request{Model: "gpt-6.2-sol", Payload: []byte(`{"input":[` + tc.items + `]}`)}, opts)
+			if tc.want400 {
+				var s interface{ StatusCode() int }
+				if !errors.As(err, &s) || s.StatusCode() != 400 || len(delivered) != prior {
+					t.Fatalf("want local refusal; err=%v, sends=%d", err, len(delivered)-prior)
+				}
+				return
+			}
+			if err != nil || len(delivered) != prior+1 || !strings.HasSuffix(delivered[prior], "REISSUED") {
+				t.Fatalf("fresh plaintext not delivered: %v", err)
+			}
+		})
+	}
+}
