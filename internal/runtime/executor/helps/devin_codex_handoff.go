@@ -1,7 +1,6 @@
 package helps
 
 import (
-	"bytes"
 	"context"
 	"strings"
 
@@ -88,24 +87,25 @@ func encryptedParameter(schema ojson.Result) bool {
 	return found
 }
 
-// HasPendingEncryptedHandoff checks the last conversational input, not historical mail.
-// Configuration records may follow the current input without starting another turn.
+// HasPendingEncryptedHandoff rejects unreadable mail in the current delivery batch.
+// More mail or configuration can follow it before a user or assistant advances the conversation.
 func HasPendingEncryptedHandoff(body []byte) bool {
-	if !bytes.Contains(body, []byte("agent_message")) {
-		return false
-	}
 	var pending bool
 	ojson.GetBytesNoCopy(body, "input").ForEach(func(_, item ojson.Result) bool {
 		switch item.Get("type").String() {
-		case "additional_tools", "configuration_update":
-			return true
 		case "agent_message":
-			pending = false
-			item.Get("content").ForEach(func(_, part ojson.Result) bool {
-				pending = part.Get("type").String() == "encrypted_content"
-				return !pending
-			})
-		default:
+			if !pending {
+				item.Get("content").ForEach(func(_, part ojson.Result) bool {
+					pending = part.Get("type").String() == "encrypted_content"
+					return !pending
+				})
+			}
+		case "message", "":
+			role := item.Get("role").String()
+			if role == "assistant" || role == "user" {
+				pending = false
+			}
+		case "function_call", "custom_tool_call", "tool_search_call", "function_call_output", "custom_tool_call_output", "tool_search_output", "output_text":
 			pending = false
 		}
 		return true

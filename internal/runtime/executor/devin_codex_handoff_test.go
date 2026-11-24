@@ -167,6 +167,9 @@ func TestDevinRejectsOnlyPendingEncryptedHandoff(t *testing.T) {
 		refuse      bool
 	}{
 		{"current", encrypted, true}, {"current followed by configuration", encrypted + `,{"type":"additional_tools","tools":[]}`, true},
+		{"escaped task type", strings.Replace(encrypted, "agent_message", `agent_\u006dessage`, 1), true},
+		{"batched unread task and readable notice", encrypted + "," + clear, true},
+		{"unread task before developer context", encrypted + `,{"type":"message","role":"developer","content":[{"type":"input_text","text":"status context"}]}`, true},
 		{"history before new readable task", encrypted + "," + turn + "," + clear, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
