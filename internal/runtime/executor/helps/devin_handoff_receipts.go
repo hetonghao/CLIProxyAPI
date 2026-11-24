@@ -35,7 +35,13 @@ func (r *DevinHandoffReceipts) Refuse(payload []byte, caller, session string) bo
 		}
 		return true
 	})
-	var pending, previouslyRejected map[handoffPeer]bool
+	// For each sender, distinguish new opaque mail from already refused mail. A
+	// partial resend from that sender cannot silently stand in for two messages.
+	type state struct {
+		outstanding, unreported int
+		resending               bool
+	}
+	var peers map[handoffPeer]state
 	var key [sha256.Size]byte
 	for _, item := range batch {
 		peer := handoffPeer{item.Get("author").String(), item.Get("recipient").String()}
@@ -45,43 +51,53 @@ func (r *DevinHandoffReceipts) Refuse(payload []byte, caller, session string) bo
 			case "encrypted_content":
 				opaque = true
 			case "input_text":
-				if strings.TrimSpace(part.Get("text").String()) != "" {
-					readable = true
-				}
+				readable = readable || strings.TrimSpace(part.Get("text").String()) != ""
 			}
 			return !opaque
 		})
-		if pending == nil {
+		if peers == nil {
 			if !opaque {
 				continue
 			}
-			pending = make(map[handoffPeer]bool)
-			previouslyRejected = make(map[handoffPeer]bool)
-			// Length-independent separation of arbitrary caller and session identifiers.
-			scope := [2][sha256.Size]byte{sha256.Sum256([]byte(caller)), sha256.Sum256([]byte(session))}
-			key = hashHandoffPair(scope[0], scope[1])
+			peers = make(map[handoffPeer]state)
+			key = hashHandoffPair(sha256.Sum256([]byte(caller)), sha256.Sum256([]byte(session)))
 			r.init.Do(func() { r.refused = cache.NewBoundedLRU[[sha256.Size]byte, bool](1024, nil) })
 		}
+		s := peers[peer]
 		if opaque {
 			if peer.author == "" || peer.recipient == "" {
 				return true
 			}
-			pending[peer] = true
-			delete(previouslyRejected, peer)
-		} else if readable && previouslyRejected[peer] {
-			delete(pending, peer)
-			delete(previouslyRejected, peer)
+			s.outstanding++
+			s.unreported++
+		} else if readable && s.outstanding > s.unreported {
+			s.outstanding--
+			s.resending = true
 		}
+		peers[peer] = s
 		key = hashHandoffPair(key, sha256.Sum256([]byte(item.Raw)))
 		if session != "" {
-			if _, ok := r.refused.Get(key); ok {
-				for who := range pending {
-					previouslyRejected[who] = true
+			if _, known := r.refused.Get(key); known {
+				for k, s := range peers {
+					s.unreported = 0
+					s.resending = false
+					peers[k] = s
 				}
 			}
 		}
 	}
-	if len(pending) == 0 {
+	if peers == nil {
+		return false
+	}
+	// The identical rejected prefix never qualifies on its own. A completely
+	// resent peer may proceed independently of another peer's historical refusal.
+	resumed := false
+	blocked := false
+	for _, s := range peers {
+		resumed = resumed || s.resending
+		blocked = blocked || s.unreported > 0 || (s.resending && s.outstanding > 0)
+	}
+	if resumed && !blocked {
 		return false
 	}
 	if session != "" {
@@ -90,9 +106,10 @@ func (r *DevinHandoffReceipts) Refuse(payload []byte, caller, session string) bo
 	return true
 }
 
-func hashHandoffPair(a, b [sha256.Size]byte) [sha256.Size]byte {
-	var pair [2 * sha256.Size]byte
-	copy(pair[:], a[:])
-	copy(pair[sha256.Size:], b[:])
-	return sha256.Sum256(pair[:])
+func hashHandoffPair(a, b [sha256.Size]byte) (sum [sha256.Size]byte) {
+	hash := sha256.New()
+	hash.Write(a[:])
+	hash.Write(b[:])
+	hash.Sum(sum[:0])
+	return sum
 }
