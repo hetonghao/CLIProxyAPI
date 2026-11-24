@@ -223,6 +223,11 @@ func TestDevinRecoversExplicitlyRejectedHandoff(t *testing.T) {
 		title, items, session string
 		want400               bool
 	}{
+		{"two tasks from one sender refused", sealed + "," + strings.Replace(sealed, "old-secret", "second-secret", 1), "multi", true},
+		{"one replacement cannot cover two tasks", sealed + "," + strings.Replace(sealed, "old-secret", "second-secret", 1) + metadata + clear, "multi", true},
+		{"both tasks replaced", sealed + "," + strings.Replace(sealed, "old-secret", "second-secret", 1) + metadata + clear + "," + strings.Replace(clear, "REISSUED", "second-REISSUED", 1), "multi", false},
+		{"two senders refused together", sealed + "," + strings.Replace(sealed, `"author":"/root"`, `"author":"/root/peer"`, 1), "peers", true},
+		{"one sender resumes independently of the other refused sender", sealed + "," + strings.Replace(sealed, `"author":"/root"`, `"author":"/root/peer"`, 1) + metadata + clear, "peers", false},
 		{"unseen mixed batch", sealed + metadata + clear, "one", true}, {"identical retry is still blocked", sealed + metadata + clear, "one", true},
 		{"newly appended resend recovers previously refused mixed batch", sealed + metadata + clear + "," + strings.Replace(clear, "REISSUED", "REPLACEMENT-REISSUED", 1), "one", false},
 		{"first refusal", sealed, "two", true}, {"retrying same ciphertext is still blocked", sealed, "two", true},
