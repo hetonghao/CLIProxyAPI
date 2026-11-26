@@ -165,6 +165,9 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						}
 						functionName = util.SanitizeFunctionName(functionName)
 						functionArgs := contentResult.Get("input").String()
+						if functionArgs == "" {
+							functionArgs = `{}`
+						}
 						argsResult := ojson.Parse(functionArgs)
 						if argsResult.IsObject() && ojson.Valid(functionArgs) {
 							partDoc := ojson.NewDocString(`{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`)
@@ -218,7 +221,41 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						}
 						partItems = append(partItems, partDoc.Bytes())
 
-					case "image", "document", "container_upload":
+					case "document":
+						emitGeminiText := func(text string) {
+							partDoc := ojson.NewDocString(`{"text":""}`)
+							_ = partDoc.Set("text", text)
+							if carrierSignature != "" {
+								_ = partDoc.Set("thoughtSignature", carrierSignature)
+							}
+							partItems = append(partItems, partDoc.Bytes())
+						}
+						if docText, ok := translatorcommon.ClaudeDocumentTextBlock(contentResult); ok {
+							emitGeminiText(docText)
+							return true
+						}
+						var onImageDrop func()
+						if originalRole == "user" {
+							onImageDrop = func() { drops.Drop("image") }
+						}
+						if translatorcommon.ExpandClaudeContentDocument(
+							contentResult,
+							emitGeminiText,
+							func(img ojson.Result) ([]byte, bool) {
+								p := claudeBase64InlineData(img.Get("source"))
+								return p, p != nil
+							},
+							func(p []byte) { partItems = append(partItems, p) },
+							onImageDrop,
+						) {
+							return true
+						}
+						if part := claudeBase64InlineData(contentResult.Get("source")); part != nil {
+							partItems = append(partItems, part)
+						} else if originalRole == "user" {
+							drops.Drop("document")
+						}
+					case "image", "container_upload":
 						if part := claudeBase64InlineData(contentResult.Get("source")); part != nil {
 							partItems = append(partItems, part)
 						} else if originalRole == "user" {
@@ -386,6 +423,16 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 	}
 	if v := ojson.GetBytesNoCopy(rawJSON, "top_k"); v.Exists() && v.Type == ojson.Number {
 		_ = outDoc.Set("generationConfig.topK", v.Num)
+	}
+	if rawMaxTokens, ok := translatorcommon.ClaudeMaxTokensRaw(ojson.GetBytesNoCopy(rawJSON, "max_tokens")); ok {
+		_ = outDoc.SetRaw("generationConfig.maxOutputTokens", rawMaxTokens)
+	}
+	if sequences := translatorcommon.ClaudeStopSequences(ojson.GetBytesNoCopy(rawJSON, "stop_sequences")); len(sequences) > 0 {
+		_ = outDoc.Set("generationConfig.stopSequences", sequences)
+	}
+	if schema, ok := translatorcommon.ClaudeOutputJSONSchema(ojson.GetBytesNoCopy(rawJSON, "output_config.format")); ok {
+		_ = outDoc.Set("generationConfig.responseMimeType", "application/json")
+		_ = outDoc.SetRaw("generationConfig.responseJsonSchema", schema.Raw)
 	}
 
 	common.AttachDefaultSafetySettingsDoc(outDoc, "safetySettings")

@@ -33,6 +33,7 @@ type rpcCapabilities struct {
 	ModelRouter                       bool                         `json:"model_router"`
 	Executor                          bool                         `json:"executor"`
 	ExecutorModelScope                pluginapi.ExecutorModelScope `json:"executor_model_scope"`
+	ExecutorAuthProviders             []string                     `json:"executor_auth_providers,omitempty"`
 	ExecutorInputFormats              []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats             []string                     `json:"executor_output_formats,omitempty"`
 	RequestTranslator                 bool                         `json:"request_translator"`
@@ -72,8 +73,9 @@ type rpcIdentifierResponse struct {
 }
 
 type rpcExecutorStreamResponse struct {
-	Headers http.Header                     `json:"headers,omitempty"`
-	Chunks  []pluginapi.ExecutorStreamChunk `json:"chunks,omitempty"`
+	Headers     http.Header                     `json:"headers,omitempty"`
+	Chunks      []pluginapi.ExecutorStreamChunk `json:"chunks,omitempty"`
+	Attribution *pluginapi.UsageAttribution     `json:"attribution,omitempty"`
 }
 
 type rpcAuthLoginStartRequest struct {
@@ -241,6 +243,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ModelRouter:                       caps.ModelRouter != nil,
 		Executor:                          caps.Executor != nil,
 		ExecutorModelScope:                normalizedExecutorModelScope(caps),
+		ExecutorAuthProviders:             append([]string(nil), caps.ExecutorAuthProviders...),
 		ExecutorInputFormats:              append([]string(nil), caps.ExecutorInputFormats...),
 		ExecutorOutputFormats:             append([]string(nil), caps.ExecutorOutputFormats...),
 		RequestTranslator:                 caps.RequestTranslator != nil,

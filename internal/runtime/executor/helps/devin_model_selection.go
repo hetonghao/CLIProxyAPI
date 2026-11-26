@@ -81,8 +81,10 @@ func devinFastEffort(level string) (string, bool) {
 	if level == "fast" {
 		return "", true
 	}
-	if effort, ok := strings.CutSuffix(level, "-fast"); ok && (devinLevelIndex(effort) >= 0 || effort == "none") {
-		return effort, true
+	if effort, ok := strings.CutSuffix(level, "-fast"); ok {
+		if _, parsed := thinking.ParseLevelSuffix(strings.TrimSpace(effort)); parsed || effort == "none" {
+			return effort, true
+		}
 	}
 	return level, false
 }

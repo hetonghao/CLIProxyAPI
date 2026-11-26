@@ -13,7 +13,7 @@ func TestApplyRequestAfterAuthInterceptorStripsForeignTurnState(t *testing.T) {
 	headers := http.Header{turnstate.Header: []string{"value-a"}}
 	opts := cliproxyexecutor.Options{Headers: headers}
 
-	_, got, err := applyRequestAfterAuthInterceptor(context.Background(), nil, "codex", &Auth{ID: "auth-b"}, cliproxyexecutor.Request{}, opts, "")
+	_, got, err := prepareRequestAfterAuth(context.Background(), nil, &Auth{ID: "auth-b"}, "codex", cliproxyexecutor.Request{}, opts, "")
 	if err != nil {
 		t.Fatalf("intercept error: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestApplyRequestAfterAuthInterceptorStripsForeignTurnState(t *testing.T) {
 
 	turnstate.Record(http.Header{turnstate.Header: []string{"value-c"}}, "auth-c")
 	sameCredential := cliproxyexecutor.Options{Headers: http.Header{turnstate.Header: []string{"value-c"}}}
-	_, got, err = applyRequestAfterAuthInterceptor(context.Background(), nil, "codex", &Auth{ID: "auth-c"}, cliproxyexecutor.Request{}, sameCredential, "")
+	_, got, err = prepareRequestAfterAuth(context.Background(), nil, &Auth{ID: "auth-c"}, "codex", cliproxyexecutor.Request{}, sameCredential, "")
 	if err != nil {
 		t.Fatalf("intercept error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestApplyRequestAfterAuthInterceptorStripsForeignTurnState(t *testing.T) {
 	}
 
 	noAuth := cliproxyexecutor.Options{Headers: http.Header{turnstate.Header: []string{"value-d"}}}
-	_, got, err = applyRequestAfterAuthInterceptor(context.Background(), nil, "codex", nil, cliproxyexecutor.Request{}, noAuth, "")
+	_, got, err = prepareRequestAfterAuth(context.Background(), nil, nil, "codex", cliproxyexecutor.Request{}, noAuth, "")
 	if err != nil {
 		t.Fatalf("intercept error: %v", err)
 	}

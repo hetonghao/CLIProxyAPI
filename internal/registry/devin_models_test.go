@@ -26,8 +26,8 @@ func TestValidateDevinModelsJSONAggregatesLightning(t *testing.T) {
 		t.Fatalf("expected 3 lightning UIDs to aggregate into 1 model, got %d: %+v", len(models), models)
 	}
 	m := models[0]
-	if m.ID != "devin/swe-2-lightning" {
-		t.Errorf("aggregated ID = %q, want devin/swe-2-lightning", m.ID)
+	if m.ID != "swe-2-lightning" {
+		t.Errorf("aggregated ID = %q, want swe-2-lightning", m.ID)
 	}
 	if m.DisplayName != "SWE-2 Lightning" {
 		t.Errorf("aggregated DisplayName = %q, want SWE-2 Lightning", m.DisplayName)
@@ -57,7 +57,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/swe-2" {
+		if len(models) != 1 || models[0].ID != "swe-2" {
 			t.Fatalf("unexpected models: %+v", models)
 		}
 		if models[0].Type != "devin" {
@@ -78,7 +78,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/glm-5-2" {
+		if len(models) != 1 || models[0].ID != "glm-5-2" {
 			t.Fatalf("unexpected models: %+v", models)
 		}
 	})
@@ -94,12 +94,12 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/deepseek-v4-flash" {
+		if len(models) != 1 || models[0].ID != "deepseek-v4-flash" {
 			t.Fatalf("unexpected models: %+v", models)
 		}
 	})
 
-	t.Run("clean id without devin prefix automatically namespaced", func(t *testing.T) {
+	t.Run("bare id stays bare", func(t *testing.T) {
 		data := []byte(`{
 			"devin": [
 				{
@@ -112,8 +112,8 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/swe-2" {
-			t.Fatalf("expected auto-namespaced to devin/swe-2, got: %q", models[0].ID)
+		if len(models) != 1 || models[0].ID != "swe-2" {
+			t.Fatalf("expected swe-2, got: %q", models[0].ID)
 		}
 	})
 
@@ -133,8 +133,9 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 	})
 
 	for name, data := range map[string][]byte{
-		"exact duplicate": []byte(`{"devin": [{"id": "devin/swe-2"}, {"id": "devin/swe-2"}]}`),
-		"case duplicate":  []byte(`{"devin": [{"id": "devin/SWE-2"}, {"id": "devin/swe-2"}]}`),
+		"exact duplicate":    []byte(`{"devin": [{"id": "devin/swe-2"}, {"id": "devin/swe-2"}]}`),
+		"case duplicate":     []byte(`{"devin": [{"id": "devin/SWE-2"}, {"id": "devin/swe-2"}]}`),
+		"bare and qualified": []byte(`{"devin": [{"id": "swe-2"}, {"id": "Devin/SWE-2"}]}`),
 	} {
 		t.Run("duplicate model id/"+name, func(t *testing.T) {
 			_, err := ValidateDevinModelsJSON(data)
@@ -157,17 +158,17 @@ func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
 	}
 
 	expectedIDs := []string{
-		"devin/swe-2",
-		"devin/swe-2-lightning",
-		"devin/swe-1-6-slow",
-		"devin/glm-5-2",
-		"devin/glm-5-3",
-		"devin/deepseek-v4-flash",
-		"devin/deepseek-v4-1-flash-1017",
-		"devin/gemini-3-8-flash",
-		"devin/grok-4-6",
-		"devin/claude-fable-5-1",
-		"devin/gpt-6-astra",
+		"swe-2",
+		"swe-2-lightning",
+		"swe-1-6-slow",
+		"glm-5-2",
+		"glm-5-3",
+		"deepseek-v4-flash",
+		"deepseek-v4-1-flash-1017",
+		"gemini-3-8-flash",
+		"grok-4-6",
+		"claude-fable-5-1",
+		"gpt-6-astra",
 	}
 
 	for _, id := range expectedIDs {
@@ -227,10 +228,10 @@ func TestDevinModelsRemoteFetchFallback(t *testing.T) {
 	foundCustom := false
 	foundBuiltinSlow := false
 	for _, m := range updatedModels {
-		if m != nil && m.ID == "devin/custom-test-model" {
+		if m != nil && m.ID == "custom-test-model" {
 			foundCustom = true
 		}
-		if m != nil && (m.ID == "devin/swe-1-6-slow" || m.ID == "swe-1-6-slow") {
+		if m != nil && m.ID == "swe-1-6-slow" {
 			foundBuiltinSlow = true
 		}
 	}
@@ -287,17 +288,17 @@ func TestFetchDevinModelsFromRemote_ContextNotCanceledBeforeRead_Issue6095(t *te
 }
 
 func TestDevinSWE16Slow_Issue6111(t *testing.T) {
-	// Verify that devin/swe-1-6-slow is present in GetDevinModels
+	// Verify that swe-1-6-slow is present in GetDevinModels
 	models := GetDevinModels()
 	var found *ModelInfo
 	for _, m := range models {
-		if m != nil && m.ID == "devin/swe-1-6-slow" {
+		if m != nil && m.ID == "swe-1-6-slow" {
 			found = m
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("devin/swe-1-6-slow missing from GetDevinModels()")
+		t.Fatalf("swe-1-6-slow missing from GetDevinModels()")
 	}
 
 	// Verify LookupDevinModel with and without prefix
@@ -312,8 +313,8 @@ func TestDevinSWE16Slow_Issue6111(t *testing.T) {
 
 	// Verify model metadata
 	if lookupWithPrefix != nil {
-		if lookupWithPrefix.ID != "devin/swe-1-6-slow" {
-			t.Errorf("expected ID 'devin/swe-1-6-slow', got %q", lookupWithPrefix.ID)
+		if lookupWithPrefix.ID != "swe-1-6-slow" {
+			t.Errorf("expected ID 'swe-1-6-slow', got %q", lookupWithPrefix.ID)
 		}
 		if lookupWithPrefix.DisplayName != "SWE-1.6 Slow" {
 			t.Errorf("expected DisplayName 'SWE-1.6 Slow', got %q", lookupWithPrefix.DisplayName)
@@ -341,13 +342,13 @@ func TestDevinSWE16Slow_Issue6111(t *testing.T) {
 	modelsAfterUpdate := GetDevinModels()
 	foundAfter := false
 	for _, m := range modelsAfterUpdate {
-		if m != nil && m.ID == "devin/swe-1-6-slow" {
+		if m != nil && m.ID == "swe-1-6-slow" {
 			foundAfter = true
 			break
 		}
 	}
 	if !foundAfter {
-		t.Errorf("devin/swe-1-6-slow missing from GetDevinModels() after dynamic update")
+		t.Errorf("swe-1-6-slow missing from GetDevinModels() after dynamic update")
 	}
 	if LookupDevinModel("devin/swe-1-6-slow") == nil {
 		t.Errorf("LookupDevinModel(\"devin/swe-1-6-slow\") returned nil after dynamic update")
@@ -357,92 +358,37 @@ func TestDevinSWE16Slow_Issue6111(t *testing.T) {
 func TestWithDevinBuiltins(t *testing.T) {
 	// Test WithDevinBuiltins with nil slice
 	builtins := WithDevinBuiltins(nil)
-	if len(builtins) != 7 {
-		t.Fatalf("expected 7 builtin models, got %d", len(builtins))
+	if len(builtins) != 1 {
+		t.Fatalf("expected 1 builtin model, got %d", len(builtins))
 	}
-	if builtins[0].ID != "devin/swe-1-6-slow" {
-		t.Errorf("expected ID 'devin/swe-1-6-slow', got %q", builtins[0].ID)
+	if builtins[0].ID != "swe-1-6-slow" {
+		t.Errorf("expected ID 'swe-1-6-slow', got %q", builtins[0].ID)
 	}
 
 	// Test WithDevinBuiltins preserves existing models and injects swe-1-6-slow
 	existing := []*ModelInfo{
-		{ID: "devin/swe-2", DisplayName: "SWE-2"},
+		{ID: "swe-2", DisplayName: "SWE-2"},
 	}
 	merged := WithDevinBuiltins(existing)
-	if len(merged) != 8 {
-		t.Fatalf("expected 8 models, got %d", len(merged))
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(merged))
 	}
 
 	// Test WithDevinBuiltins replaces duplicate
 	duplicate := []*ModelInfo{
-		{ID: "devin/swe-1-6-slow", DisplayName: "Old Display Name"},
+		{ID: "swe-1-6-slow", DisplayName: "Old Display Name"},
 	}
 	replaced := WithDevinBuiltins(duplicate)
-	if len(replaced) != 7 {
-		t.Fatalf("expected 7 models after deduplication, got %d", len(replaced))
+	if len(replaced) != 1 {
+		t.Fatalf("expected 1 model after deduplication, got %d", len(replaced))
 	}
 	if replaced[0].DisplayName != "SWE-1.6 Slow" {
 		t.Errorf("expected DisplayName 'SWE-1.6 Slow', got %q", replaced[0].DisplayName)
 	}
 }
 
-func TestWithDevinBuiltinsAddsGPT61Sol(t *testing.T) {
-	models := WithDevinBuiltins([]*ModelInfo{{ID: "devin/gpt-6-sol"}})
-	var sol *ModelInfo
-	for _, model := range models {
-		if model.ID == "devin/gpt-6-1-sol" {
-			sol = model
-		}
-	}
-	if sol == nil {
-		t.Fatal("devin/gpt-6-1-sol missing from Devin catalog")
-	}
-	if sol.ContextLength != 1000000 || sol.MaxCompletionTokens != 128000 {
-		t.Fatalf("GPT-6.1 Sol limits = %d/%d, want 1000000/128000", sol.ContextLength, sol.MaxCompletionTokens)
-	}
-	if !reflect.DeepEqual(sol.SupportedInputModalities, []string{"text", "image"}) {
-		t.Fatalf("input modalities = %v, want text and image", sol.SupportedInputModalities)
-	}
-	if sol.Thinking == nil || !reflect.DeepEqual(sol.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
-		t.Fatalf("thinking support = %+v, want low through max without none", sol.Thinking)
-	}
-}
 
-func TestWithDevinBuiltinsAddsGemini4Argon(t *testing.T) {
-	models := WithDevinBuiltins(nil)
-	var argon *ModelInfo
-	for _, model := range models {
-		if model.ID == "devin/gemini-4-argon" {
-			argon = model
-		}
-	}
-	if argon == nil {
-		t.Fatal("devin/gemini-4-argon missing from Devin catalog")
-	}
-	if argon.ContextLength != 1048576 || argon.MaxCompletionTokens != 64000 ||
-		!reflect.DeepEqual(argon.SupportedInputModalities, []string{"text", "image"}) ||
-		argon.Thinking == nil || !reflect.DeepEqual(argon.Thinking.Levels, []string{"low", "medium", "high"}) {
-		t.Fatalf("Gemini 4 Argon metadata differs from the Devin catalog: %+v", argon)
-	}
-}
 
-func TestDevinGPT61TerraSurvivesCatalogRefresh(t *testing.T) {
-	original := GetDevinModelsJSON()
-	t.Cleanup(func() {
-		if _, err := loadDevinModelsFromBytes(original, "restore"); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if _, err := loadDevinModelsFromBytes([]byte(`{"devin":[{"id":"gpt-6-sol","object":"model","type":"devin"}]}`), "test"); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"devin/gpt-6-1-terra", "gpt-6-1-terra"} {
-		model := LookupDevinModel(id)
-		if model == nil || model.Thinking == nil || !reflect.DeepEqual(model.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
-			t.Fatalf("Terra must remain routable after a catalog without Terra is loaded: %+v", model)
-		}
-	}
-}
 
 func TestWithDevinBuiltinsPrefersUpstreamGPT61Terra(t *testing.T) {
 	upstream := &ModelInfo{ID: "devin/gpt-6-1-terra", ContextLength: 2000000, Thinking: &ThinkingSupport{Levels: []string{"high"}}}
@@ -460,22 +406,6 @@ func TestWithDevinBuiltinsPrefersUpstreamGPT61Terra(t *testing.T) {
 	}
 }
 
-func TestWithDevinBuiltinsAddsSonnet55(t *testing.T) {
-	var sonnet *ModelInfo
-	for _, model := range WithDevinBuiltins(nil) {
-		if model.ID == "devin/claude-sonnet-5-5" {
-			sonnet = model
-		}
-	}
-	if sonnet == nil {
-		t.Fatal("devin/claude-sonnet-5-5 missing from Devin catalog")
-	}
-	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 64000 ||
-		!reflect.DeepEqual(sonnet.SupportedInputModalities, []string{"text", "image"}) ||
-		sonnet.Thinking == nil || !reflect.DeepEqual(sonnet.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
-		t.Fatalf("Sonnet 5.5 metadata differs from the Devin catalog: %+v", sonnet)
-	}
-}
 
 func TestWithDevinBuiltinsPrefersUpstreamSonnet55(t *testing.T) {
 	upstream := &ModelInfo{ID: "devin/claude-sonnet-5-5", DisplayName: "Upstream Sonnet", ContextLength: 2000000}
@@ -551,7 +481,7 @@ func TestEmbeddedDevinModels_NoThinkingSuffixes_Issue6141(t *testing.T) {
 	}
 	var exposedThinkingVariants []string
 	for _, m := range models {
-		cleanID := strings.TrimPrefix(m.ID, "devin/")
+		cleanID := m.ID
 		for _, s := range disallowedSuffixes {
 			if strings.HasSuffix(cleanID, s) {
 				exposedThinkingVariants = append(exposedThinkingVariants, m.ID)
@@ -592,8 +522,8 @@ func TestValidateDevinModelsJSON_AggregatesThinkingVariants_Issue6141(t *testing
 	if len(models) != 1 {
 		t.Fatalf("expected 1 aggregated model, got %d: %+v", len(models), models)
 	}
-	if models[0].ID != "devin/claude-opus-5" {
-		t.Errorf("expected ID devin/claude-opus-5, got %q", models[0].ID)
+	if models[0].ID != "claude-opus-5" {
+		t.Errorf("expected ID claude-opus-5, got %q", models[0].ID)
 	}
 	if models[0].Thinking == nil {
 		t.Fatalf("expected Thinking to be populated")
@@ -606,23 +536,23 @@ func TestValidateDevinModelsJSON_AggregatesThinkingVariants_Issue6141(t *testing
 
 func TestWithDevinBuiltinsMarksSWE2FlashTextOnly(t *testing.T) {
 	flash := &ModelInfo{
-		ID:                       "devin/swe-2-flash",
+		ID:                       "swe-2-flash",
 		DisplayName:              "SWE-2 Flash",
 		ContextLength:            262144,
 		MaxCompletionTokens:      64000,
 		SupportedInputModalities: []string{"text", "image"},
 		Thinking:                 &ThinkingSupport{Levels: []string{"medium", "high", "max"}},
 	}
-	swe2 := &ModelInfo{ID: "devin/swe-2", SupportedInputModalities: []string{"text", "image"}}
+	swe2 := &ModelInfo{ID: "swe-2", SupportedInputModalities: []string{"text", "image"}}
 	upper := &ModelInfo{ID: "DEVIN/SWE-2-FLASH", SupportedInputModalities: []string{"text", "image"}}
 	models := WithDevinBuiltins([]*ModelInfo{flash, swe2, upper})
 
 	var gotFlash, gotSWE2, gotUpper *ModelInfo
 	for _, model := range models {
 		switch model.ID {
-		case "devin/swe-2-flash":
+		case "swe-2-flash":
 			gotFlash = model
-		case "devin/swe-2":
+		case "swe-2":
 			gotSWE2 = model
 		case "DEVIN/SWE-2-FLASH":
 			gotUpper = model
@@ -655,7 +585,7 @@ func TestLookupDevinModelMarksSWE2FlashTextOnly(t *testing.T) {
 	devinCatalogStore.mu.Lock()
 	original := devinCatalogStore.models
 	devinCatalogStore.models = []*ModelInfo{{
-		ID:                       "devin/swe-2-flash",
+		ID:                       "swe-2-flash",
 		SupportedInputModalities: []string{"text", "image"},
 	}}
 	devinCatalogStore.mu.Unlock()
