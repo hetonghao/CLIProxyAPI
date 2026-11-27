@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1036,6 +1037,14 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 		Status:     coreauth.StatusActive,
 		Attributes: map[string]string{"plan_type": "pro", "path": "/path/to/codex-batch-wait-b.json"},
 	}
+	bStarted := make(chan struct{})
+	bBlock := make(chan struct{})
+	finishedBatch := make(chan struct{})
+	var signalStarted, release sync.Once
+	authB.Runtime = &registrationInterleaveRuntime{onRead: func() {
+		signalStarted.Do(func() { close(bStarted) })
+		<-bBlock
+	}}
 	for _, auth := range []*coreauth.Auth{authA, authB} {
 		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 			t.Fatalf("register auth %s: %v", auth.ID, errRegister)
@@ -1044,30 +1053,19 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
 
-	bStarted := make(chan struct{})
-	bBlock := make(chan struct{})
-	var started atomic.Int32
-	modelRegistrationTaskHook = func() {
-		if started.Add(1) == 2 {
-			close(bStarted)
-			<-bBlock
-		}
-	}
-	t.Cleanup(func() {
-		modelRegistrationTaskHook = nil
-		select {
-		case <-bBlock:
-		default:
-			close(bBlock)
-		}
-	})
-
 	updateA := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authAID, Auth: authA}
 	updateA.SetRevision(1)
 	updateB := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authBID, Auth: authB}
 	updateB.SetRevision(1)
 
-	finishedBatch := make(chan struct{})
+	t.Cleanup(func() {
+		release.Do(func() { close(bBlock) })
+		select {
+		case <-finishedBatch:
+		case <-time.After(2 * time.Second):
+			t.Error("batch auth update did not finish during cleanup")
+		}
+	})
 	go func() {
 		defer close(finishedBatch)
 		service.handleAuthUpdates(context.Background(), []watcher.AuthUpdate{updateA, updateB})
@@ -1090,7 +1088,7 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 		t.Fatal("auth A hook wait blocked on unrelated auth B registration")
 	}
 
-	close(bBlock)
+	release.Do(func() { close(bBlock) })
 	select {
 	case <-finishedBatch:
 	case <-time.After(2 * time.Second):
